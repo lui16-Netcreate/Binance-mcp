@@ -8,11 +8,15 @@ Usage:
     python monitor.py ETHUSDT 4h             # custom symbol and interval
     python monitor.py BTCUSDT 1h 10          # custom check interval (minutes)
 """
+import os
 import sys
 import time
 import logging
-from datetime import datetime
+import requests
+from dotenv import load_dotenv
 import binance
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +27,22 @@ logging.basicConfig(
 SYMBOL   = sys.argv[1] if len(sys.argv) > 1 else "BTCUSDT"
 INTERVAL = sys.argv[2] if len(sys.argv) > 2 else "4h"
 CHECK_EVERY_MINUTES = int(sys.argv[3]) if len(sys.argv) > 3 else 15
+
+
+def send_telegram(message: str):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        logging.warning("Telegram credentials not set in .env")
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception as e:
+        logging.warning(f"Telegram notification failed: {e}")
 
 
 def send_notification(title: str, message: str):
@@ -86,11 +106,19 @@ def run():
                     f"RSI: {result['rsi']}\n"
                     f"Golden zone: ${result['fib_0786']:,.2f} – ${result['fib_0618']:,.2f}"
                 )
+                telegram_msg = (
+                    f"🚨 *Confluence Alert — {result['symbol']} {result['interval']}*\n\n"
+                    f"💰 Price: `${result['price']:,.2f}`\n"
+                    f"📉 RSI(14): `{result['rsi']}` ← oversold\n"
+                    f"📊 Fib Golden Zone: `${result['fib_0786']:,.2f} – ${result['fib_0618']:,.2f}`\n\n"
+                    f"⚡ RSI + Fibonacci confluence detected — potential reversal zone."
+                )
                 logging.info(f"🚨 CONFLUENCE ALERT: {SYMBOL} {INTERVAL}")
                 send_notification(
                     title=f"🚨 Confluence Alert — {result['symbol']} {result['interval']}",
                     message=msg,
                 )
+                send_telegram(telegram_msg)
 
         except Exception as e:
             logging.error(f"Check failed: {e}")
