@@ -74,6 +74,23 @@ def _rsi(closes: list[float], period: int = 14) -> float | None:
     return round(100 - (100 / (1 + rs)), 2)
 
 
+def compute_fibonacci(candles: list[dict]) -> dict:
+    """
+    Calculates Fibonacci retracement levels from the swing high/low
+    across the provided candles. Golden zone = 0.618 to 0.786.
+    """
+    swing_high = max(c["high"] for c in candles)
+    swing_low = min(c["low"] for c in candles)
+    diff = swing_high - swing_low
+    return {
+        "swing_high": swing_high,
+        "swing_low": swing_low,
+        "fib_0500": round(swing_high - 0.500 * diff, 4),
+        "fib_0618": round(swing_high - 0.618 * diff, 4),  # golden zone bottom
+        "fib_0786": round(swing_high - 0.786 * diff, 4),  # golden zone top
+    }
+
+
 def compute_indicators(candles: list[dict]) -> dict:
     closes = [c["close"] for c in candles]
     return {
