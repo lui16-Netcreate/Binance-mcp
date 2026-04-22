@@ -1,0 +1,67 @@
+//@version=5
+strategy(
+     title       = "RSI + Fibonacci Golden Zone Confluence",
+     shorttitle  = "RSI+Fib Confluence",
+     overlay     = true,
+     initial_capital = 10000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.1
+ )
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+rsi_length   = input.int(14,  title="RSI Length")
+rsi_oversold = input.int(30,  title="RSI Oversold Level")
+fib_lookback = input.int(100, title="Fibonacci Lookback (bars)")
+tp_pct       = input.float(5.0, title="Take Profit %", step=0.5)
+sl_pct       = input.float(3.0, title="Stop Loss %",   step=0.5)
+
+// ── RSI ───────────────────────────────────────────────────────────────────────
+rsi = ta.rsi(close, rsi_length)
+
+// ── Fibonacci golden zone ─────────────────────────────────────────────────────
+swing_high = ta.highest(high, fib_lookback)
+swing_low  = ta.lowest(low,  fib_lookback)
+fib_range  = swing_high - swing_low
+
+fib_0618 = swing_high - 0.618 * fib_range   // golden zone bottom
+fib_0786 = swing_high - 0.786 * fib_range   // golden zone top
+
+in_golden_zone = close <= fib_0618 and close >= fib_0786
+
+// ── Plot golden zone ──────────────────────────────────────────────────────────
+p1 = plot(fib_0618, title="Fib 0.618", color=color.new(color.yellow, 60), linewidth=1)
+p2 = plot(fib_0786, title="Fib 0.786", color=color.new(color.orange, 60), linewidth=1)
+fill(p1, p2, color=color.new(color.yellow, 80), title="Golden Zone")
+
+// ── Confluence condition ──────────────────────────────────────────────────────
+confluence = rsi <= rsi_oversold and in_golden_zone
+
+// ── Buy signal marker ─────────────────────────────────────────────────────────
+plotshape(
+     confluence,
+     title    = "Confluence Signal",
+     style    = shape.labelup,
+     location = location.belowbar,
+     color    = color.new(color.green, 0),
+     text     = "BUY",
+     textcolor = color.white,
+     size     = size.small
+ )
+
+// ── Strategy entries and exits ────────────────────────────────────────────────
+if confluence and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+
+if strategy.position_size > 0
+    strategy.exit(
+         id         = "Exit",
+         from_entry = "Long",
+         profit     = close * tp_pct / 100 / syminfo.mintick,
+         loss       = close * sl_pct / 100 / syminfo.mintick
+     )
+
+// ── RSI panel ─────────────────────────────────────────────────────────────────
+var rsi_plot = plot(rsi, title="RSI", display=display.none)
+hline(rsi_oversold, "Oversold", color=color.red, linestyle=hline.style_dashed)
