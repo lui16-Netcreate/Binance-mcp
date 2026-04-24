@@ -115,5 +115,37 @@ def analyze_symbol(symbol: str, interval: str = "1h") -> str:
         return f"Error analyzing {symbol}: {e}"
 
 
+@mcp.tool()
+def get_fear_greed_index() -> str:
+    """Get the current Crypto Fear & Greed Index (0=Extreme Fear, 100=Extreme Greed)."""
+    try:
+        data = binance.get_fear_greed()
+        return f"Fear & Greed: {data['value']}/100 — {data['classification']}"
+    except Exception as e:
+        return f"Error fetching Fear & Greed index: {e}"
+
+
+@mcp.tool()
+def get_funding_rate(symbol: str = "BTCUSDT") -> str:
+    """Get the current perpetual futures funding rate for a symbol from Bybit."""
+    try:
+        data = binance.get_funding_rate(symbol)
+        direction = "longs paying shorts (bearish pressure)" if data["funding_rate"] > 0 else "shorts paying longs (bullish pressure)"
+        return f"{data['symbol']} funding rate: {data['funding_rate']}% — {direction}"
+    except Exception as e:
+        return f"Error fetching funding rate for {symbol}: {e}"
+
+
+@mcp.tool()
+def get_market_sentiment(symbol: str = "BTCUSDT") -> str:
+    """Get a combined market sentiment snapshot: Fear & Greed index + funding rate."""
+    try:
+        fg   = binance.get_fear_greed()
+        fund = binance.get_funding_rate(symbol)
+        return json.dumps({"fear_greed": fg, "funding_rate": fund}, indent=2)
+    except Exception as e:
+        return f"Error fetching sentiment: {e}"
+
+
 if __name__ == "__main__":
     mcp.run()

@@ -101,6 +101,17 @@ def run():
             logging.info(status)
 
             if result["confluence"]:
+                # fetch sentiment for richer alert
+                try:
+                    fg   = binance.get_fear_greed()
+                    fund = binance.get_funding_rate(SYMBOL)
+                    sentiment_line = (
+                        f"😱 Fear & Greed: `{fg['value']}/100 — {fg['classification']}`\n"
+                        f"💸 Funding Rate: `{fund['funding_rate']}%` ({fund['sentiment']})\n"
+                    )
+                except Exception:
+                    sentiment_line = ""
+
                 msg = (
                     f"Price: ${result['price']:,.2f}\n"
                     f"RSI: {result['rsi']}\n"
@@ -110,7 +121,8 @@ def run():
                     f"🚨 *Confluence Alert — {result['symbol']} {result['interval']}*\n\n"
                     f"💰 Price: `${result['price']:,.2f}`\n"
                     f"📉 RSI(14): `{result['rsi']}` ← oversold\n"
-                    f"📊 Fib Golden Zone: `${result['fib_0786']:,.2f} – ${result['fib_0618']:,.2f}`\n\n"
+                    f"📊 Fib Golden Zone: `${result['fib_0786']:,.2f} – ${result['fib_0618']:,.2f}`\n"
+                    f"{sentiment_line}\n"
                     f"⚡ RSI + Fibonacci confluence detected — potential reversal zone."
                 )
                 logging.info(f"🚨 CONFLUENCE ALERT: {SYMBOL} {INTERVAL}")

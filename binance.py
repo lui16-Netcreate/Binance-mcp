@@ -91,6 +91,37 @@ def compute_fibonacci(candles: list[dict]) -> dict:
     }
 
 
+def get_fear_greed() -> dict:
+    """Fetch the current Crypto Fear & Greed Index (0=Extreme Fear, 100=Extreme Greed)."""
+    r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+    r.raise_for_status()
+    d = r.json()["data"][0]
+    return {
+        "value": int(d["value"]),
+        "classification": d["value_classification"],
+    }
+
+
+def get_funding_rate(symbol: str = "BTCUSDT") -> dict:
+    """Fetch the current perpetual futures funding rate from OKX (positive=longs pay, negative=shorts pay)."""
+    # Convert BTCUSDT → BTC-USDT-SWAP format for OKX
+    base = symbol.upper().replace("USDT", "")
+    inst_id = f"{base}-USDT-SWAP"
+    r = requests.get(
+        "https://www.okx.com/api/v5/public/funding-rate",
+        params={"instId": inst_id},
+        timeout=10,
+    )
+    r.raise_for_status()
+    data = r.json()["data"][0]
+    rate = float(data["fundingRate"])
+    return {
+        "symbol": symbol.upper(),
+        "funding_rate": round(rate * 100, 4),
+        "sentiment": "bearish" if rate > 0 else "bullish",
+    }
+
+
 def compute_indicators(candles: list[dict]) -> dict:
     closes = [c["close"] for c in candles]
     return {
