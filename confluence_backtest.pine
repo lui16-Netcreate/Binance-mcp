@@ -26,9 +26,14 @@ rsi_signal = rsi <= rsi_threshold
 swing_high = ta.highest(high, fib_lookback)
 swing_low  = ta.lowest(low,  fib_lookback)
 fib_range  = swing_high - swing_low
-fib_0618   = swing_high - 0.618 * fib_range
-fib_0786   = swing_high - 0.786 * fib_range
-fib_signal = close <= fib_0618 and close >= fib_0786
+fib_0618   = swing_high - 0.618 * fib_range   // upper boundary of golden zone
+fib_0786   = swing_high - 0.786 * fib_range   // lower boundary of golden zone
+
+// candle touches the zone if any part of the wick is inside it
+fib_signal  = low <= fib_0618 and high >= fib_0786
+
+// exact price where the candle enters the zone from above (clamped inside zone)
+fib_touch_price = fib_signal ? math.max(low, fib_0786) : na
 
 // ── Confluence ────────────────────────────────────────────────────────────────
 confluence = rsi_signal and fib_signal
@@ -47,9 +52,18 @@ if fib_signal and not rsi_signal
 if confluence
     count_confluence += 1
 
-// ── Plot fibonacci zone ───────────────────────────────────────────────────────
-p618 = plot(na, title="Fib 0.618")
-p786 = plot(na, title="Fib 0.786")
+// ── Plot exact candle touch point on the golden zone ─────────────────────────
+plot(fib_signal and not confluence ? fib_touch_price : na,
+     title="Fib Touch",
+     style=plot.style_circles,
+     color=color.new(color.orange, 0),
+     linewidth=4)
+
+plot(confluence ? fib_touch_price : na,
+     title="Confluence Touch",
+     style=plot.style_circles,
+     color=color.new(color.green, 0),
+     linewidth=4)
 
 // ── Plot RSI oversold background ──────────────────────────────────────────────
 bgcolor(rsi_signal and not confluence ? color.new(color.blue,  90) : na, title="RSI Only")
