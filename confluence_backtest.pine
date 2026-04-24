@@ -17,7 +17,6 @@ fib_lookback  = input.int(100,  title="Fibonacci Lookback (bars)", group="Fibona
 tp_pct        = input.float(5.0, title="Take Profit %", step=0.5,  group="Exit Settings")
 sl_pct        = input.float(3.0, title="Stop Loss %",   step=0.5,  group="Exit Settings")
 show_table    = input.bool(true, title="Show Stats Table",     group="Display")
-show_fib_zone = input.bool(true, title="Show Fibonacci Zone",  group="Display")
 
 // ── RSI ───────────────────────────────────────────────────────────────────────
 rsi = ta.rsi(close, rsi_length)
@@ -49,9 +48,8 @@ if confluence
     count_confluence += 1
 
 // ── Plot fibonacci zone ───────────────────────────────────────────────────────
-p618 = plot(show_fib_zone ? fib_0618 : na, title="Fib 0.618", color=color.new(color.yellow, 50), linewidth=1)
-p786 = plot(show_fib_zone ? fib_0786 : na, title="Fib 0.786", color=color.new(color.orange, 50), linewidth=1)
-fill(p618, p786, color=color.new(color.yellow, 85), title="Golden Zone")
+p618 = plot(na, title="Fib 0.618")
+p786 = plot(na, title="Fib 0.786")
 
 // ── Plot RSI oversold background ──────────────────────────────────────────────
 bgcolor(rsi_signal and not confluence ? color.new(color.blue,  90) : na, title="RSI Only")
