@@ -137,12 +137,48 @@ def get_funding_rate(symbol: str = "BTCUSDT") -> str:
 
 
 @mcp.tool()
-def get_market_sentiment(symbol: str = "BTCUSDT") -> str:
-    """Get a combined market sentiment snapshot: Fear & Greed index + funding rate."""
+def get_long_short_ratio(symbol: str = "BTCUSDT", period: str = "1h") -> str:
+    """Get the long/short ratio for a symbol. Ratio > 1 = more longs, < 1 = more shorts."""
     try:
-        fg   = binance.get_fear_greed()
-        fund = binance.get_funding_rate(symbol)
-        return json.dumps({"fear_greed": fg, "funding_rate": fund}, indent=2)
+        data = binance.get_long_short_ratio(symbol, period)
+        return f"{data['symbol']} long/short ratio: {data['long_short_ratio']} — {data['sentiment']}"
+    except Exception as e:
+        return f"Error fetching long/short ratio for {symbol}: {e}"
+
+
+@mcp.tool()
+def get_open_interest(symbol: str = "BTCUSDT") -> str:
+    """Get current open interest for a perpetual futures symbol."""
+    try:
+        data = binance.get_open_interest(symbol)
+        return f"{data['symbol']} open interest: {data['open_interest']:,.0f} contracts (${data['open_interest_usd']:,.0f})"
+    except Exception as e:
+        return f"Error fetching open interest for {symbol}: {e}"
+
+
+@mcp.tool()
+def get_news_sentiment(symbol: str = "BTC") -> str:
+    """Get news sentiment for a crypto asset from CryptoPanic (bullish/bearish/neutral)."""
+    try:
+        data = binance.get_news_sentiment(symbol)
+        return (
+            f"{data['symbol']} news sentiment: {data['sentiment'].upper()} "
+            f"({data['bullish_articles']} bullish / {data['bearish_articles']} bearish "
+            f"out of {data['articles_checked']} articles)"
+        )
+    except Exception as e:
+        return f"Error fetching news sentiment for {symbol}: {e}"
+
+
+@mcp.tool()
+def get_market_sentiment(symbol: str = "BTCUSDT") -> str:
+    """
+    Full sentiment snapshot for a symbol: Fear & Greed, funding rate,
+    long/short ratio, open interest, and news sentiment.
+    """
+    try:
+        data = binance.get_full_sentiment(symbol)
+        return json.dumps(data, indent=2)
     except Exception as e:
         return f"Error fetching sentiment: {e}"
 
