@@ -27,6 +27,7 @@ import requests
 from telethon import TelegramClient, events
 from binance.client import Client as BinanceClient
 from binance.exceptions import BinanceAPIException
+import binance_data
 
 load_dotenv()
 logging.basicConfig(
@@ -194,11 +195,31 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
     }
 
 
+# ── Confluence snapshot ───────────────────────────────────────────────────────
+
+def snapshot_confluence(symbol: str) -> dict:
+    snapshot = {"symbol": symbol, "timestamp": datetime.now(timezone.utc).isoformat()}
+    try:
+        candles = binance_data.get_candles(symbol, "1h", 100)
+        snapshot["indicators"] = binance_data.compute_indicators(candles)
+        snapshot["fibonacci"]  = binance_data.compute_fibonacci(candles)
+    except Exception as e:
+        snapshot["indicators_error"] = str(e)
+    try:
+        snapshot["sentiment"] = binance_data.get_full_sentiment(symbol)
+    except Exception as e:
+        snapshot["sentiment_error"] = str(e)
+    return snapshot
+
+
 # ── Trade log ─────────────────────────────────────────────────────────────────
 
-def log_trade(signal: dict, result: dict):
+def log_trade(signal: dict, result: dict, confluence: dict = None):
     trades = json.loads(TRADES_LOG.read_text()) if TRADES_LOG.exists() else []
-    trades.append({"signal": signal, "result": result})
+    entry = {"signal": signal, "result": result}
+    if confluence:
+        entry["confluence"] = confluence
+    trades.append(entry)
     TRADES_LOG.write_text(json.dumps(trades, indent=2))
 
 
@@ -289,8 +310,13 @@ async def main():
             f"entries={signal['entries']}  sl={signal['sl']}"
         )
 
+        confluence = await asyncio.to_thread(snapshot_confluence, signal["symbol"])
+        rsi = confluence.get("indicators", {}).get("rsi_14", "?")
+        fg  = confluence.get("sentiment", {}).get("fear_greed", {}).get("value", "?")
+        logging.info(f"📊 Confluence: RSI={rsi}  Fear&Greed={fg}")
+
         result = execute_signal(binance_client, signal)
-        log_trade(signal, result)
+        log_trade(signal, result, confluence)
         send_telegram(build_confirmation(signal, result))
 
     await tg.run_until_disconnected()

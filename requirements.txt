@@ -6,3 +6,4 @@ plyer
 python-dotenv
 telethon
 python-binance
+anthropic

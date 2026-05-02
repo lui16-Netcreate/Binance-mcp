@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crypto Auto-Trader Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    :root {
+      --bg:      #0d1117;
+      --card:    #161b22;
+      --border:  #30363d;
+      --text:    #e6edf3;
+      --muted:   #7d8590;
+      --green:   #3fb950;
+      --red:     #f85149;
+      --blue:    #58a6ff;
+      --yellow:  #d29922;
+      --purple:  #a371f7;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace;
+      font-size: 14px;
+      padding: 24px;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+    header h1 { font-size: 20px; font-weight: 600; }
+    header h1 span { color: var(--blue); }
+    #last-updated { color: var(--muted); font-size: 12px; }
+    .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ── Cards ── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+    .card .value { font-size: 28px; font-weight: 700; }
+    .card .value.green  { color: var(--green); }
+    .card .value.red    { color: var(--red); }
+    .card .value.blue   { color: var(--blue); }
+    .card .value.yellow { color: var(--yellow); }
+    .card .value.purple { color: var(--purple); }
+
+    /* ── Charts row ── */
+    .charts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
+    .chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .chart-card h3 { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+    .chart-card canvas { max-height: 200px; }
+
+    /* ── Table ── */
+    .table-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+    }
+    .table-card h3 { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--muted);
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    td {
+      padding: 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      font-size: 13px;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.03); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge.long  { background: rgba(63,185,80,.2);  color: var(--green); }
+    .badge.short { background: rgba(248,81,73,.2);  color: var(--red); }
+
+    .price-up   { color: var(--green); }
+    .price-down { color: var(--red); }
+    .price-neutral { color: var(--muted); }
+
+    .tps { color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .entries { font-size: 12px; line-height: 1.6; }
+
+    #empty {
+      text-align: center;
+      padding: 48px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1><span class="dot"></span>Crypto <span>Auto-Trader</span> Dashboard</h1>
+  <div id="last-updated">Loading...</div>
+</header>
+
+<div class="cards">
+  <div class="card">
+    <div class="label">Total Signals</div>
+    <div class="value blue" id="c-total">—</div>
+  </div>
+  <div class="card">
+    <div class="label">LONGs Executed</div>
+    <div class="value green" id="c-longs">—</div>
+  </div>
+  <div class="card">
+    <div class="label">SHORTs Skipped</div>
+    <div class="value red" id="c-shorts">—</div>
+  </div>
+  <div class="card">
+    <div class="label">Avg RSI at Entry</div>
+    <div class="value yellow" id="c-rsi">—</div>
+  </div>
+  <div class="card">
+    <div class="label">Avg Fear & Greed</div>
+    <div class="value purple" id="c-fg">—</div>
+  </div>
+  <div class="card">
+    <div class="label">With Errors</div>
+    <div class="value red" id="c-errors">—</div>
+  </div>
+</div>
+
+<div class="charts">
+  <div class="chart-card">
+    <h3>Top Symbols</h3>
+    <canvas id="chart-symbols"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>RSI at Entry Distribution</h3>
+    <canvas id="chart-rsi"></canvas>
+  </div>
+</div>
+
+<div class="table-card">
+  <h3>Trade History</h3>
+  <div id="empty" style="display:none">No trades logged yet. Waiting for first signal...</div>
+  <table id="trades-table">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Symbol</th>
+        <th>Dir</th>
+        <th>Entries</th>
+        <th>TPs</th>
+        <th>SL</th>
+        <th>RSI</th>
+        <th>F&G</th>
+        <th>Current Price</th>
+        <th>Orders</th>
+      </tr>
+    </thead>
+    <tbody id="trades-body"></tbody>
+  </table>
+</div>
+
+<script>
+  let symbolChart = null;
+  let rsiChart    = null;
+
+  function fmt(n, decimals = 4) {
+    if (n == null) return "—";
+    return "$" + parseFloat(n).toLocaleString("en-US", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  }
+
+  function timeAgo(iso) {
+    const d = new Date(iso);
+    return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" });
+  }
+
+  async function loadSummary() {
+    const r = await fetch("/api/summary");
+    const d = await r.json();
+
+    document.getElementById("c-total").textContent  = d.total ?? "—";
+    document.getElementById("c-longs").textContent  = d.longs ?? "—";
+    document.getElementById("c-shorts").textContent = d.shorts ?? "—";
+    document.getElementById("c-rsi").textContent    = d.avg_rsi ?? "—";
+    document.getElementById("c-fg").textContent     = d.avg_fg != null ? d.avg_fg + "/100" : "—";
+    document.getElementById("c-errors").textContent = d.errors ?? "—";
+
+    // Symbols chart
+    const symLabels = d.symbols.map(s => s[0].replace("USDT", ""));
+    const symValues = d.symbols.map(s => s[1]);
+    if (symbolChart) symbolChart.destroy();
+    symbolChart = new Chart(document.getElementById("chart-symbols"), {
+      type: "bar",
+      data: {
+        labels: symLabels,
+        datasets: [{ data: symValues, backgroundColor: "#58a6ff99", borderColor: "#58a6ff", borderWidth: 1, borderRadius: 4 }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#7d8590" }, grid: { color: "#30363d" } },
+          y: { ticks: { color: "#7d8590", stepSize: 1 }, grid: { color: "#30363d" } }
+        }
+      }
+    });
+
+    // RSI distribution
+    const bins = [0,10,20,30,40,50,60,70,80,90,100];
+    const counts = new Array(10).fill(0);
+    (d.rsi_values || []).forEach(v => {
+      const i = Math.min(Math.floor(v / 10), 9);
+      counts[i]++;
+    });
+    const rsiLabels = bins.slice(0,-1).map((b,i) => `${b}–${bins[i+1]}`);
+    const rsiColors = rsiLabels.map((_, i) => i <= 2 ? "#3fb95099" : i >= 7 ? "#f8514999" : "#d2992299");
+    if (rsiChart) rsiChart.destroy();
+    rsiChart = new Chart(document.getElementById("chart-rsi"), {
+      type: "bar",
+      data: {
+        labels: rsiLabels,
+        datasets: [{ data: counts, backgroundColor: rsiColors, borderRadius: 4 }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: "#7d8590", font: { size: 10 } }, grid: { color: "#30363d" } },
+          y: { ticks: { color: "#7d8590", stepSize: 1 }, grid: { color: "#30363d" } }
+        }
+      }
+    });
+  }
+
+  async function loadTrades() {
+    const r = await fetch("/api/trades");
+    const trades = await r.json();
+    const tbody = document.getElementById("trades-body");
+    tbody.innerHTML = "";
+
+    if (!trades.length) {
+      document.getElementById("empty").style.display = "block";
+      document.getElementById("trades-table").style.display = "none";
+      return;
+    }
+
+    document.getElementById("empty").style.display = "none";
+    document.getElementById("trades-table").style.display = "table";
+
+    trades.forEach(t => {
+      const sig    = t.signal;
+      const res    = t.result;
+      const conf   = t.confluence || {};
+      const ind    = conf.indicators || {};
+      const sent   = conf.sentiment || {};
+      const fg     = sent.fear_greed || {};
+      const curPrice = t.current_price;
+      const avgEntry = sig.entries.reduce((a,b) => a+b, 0) / sig.entries.length;
+
+      let priceClass = "price-neutral";
+      let priceStr = curPrice ? fmt(curPrice) : "—";
+      if (curPrice && sig.direction === "LONG") {
+        priceClass = curPrice >= avgEntry ? "price-up" : "price-down";
+      }
+
+      const tpLines = Object.entries(sig.tps).map(([k,v]) =>
+        `<div>${k.toUpperCase()}: ${fmt(v, 4)}</div>`
+      ).join("");
+
+      const entryLines = sig.entries.map(e => `<div>${fmt(e, 4)}</div>`).join("");
+      const orders = res.placed_orders.length;
+
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td style="color:var(--muted);white-space:nowrap">${timeAgo(res.timestamp)}</td>
+        <td><strong>${sig.symbol.replace("USDT","")}</strong><div style="color:var(--muted);font-size:11px">USDT</div></td>
+        <td><span class="badge ${sig.direction.toLowerCase()}">${sig.direction}</span></td>
+        <td class="entries">${entryLines}</td>
+        <td class="tps">${tpLines}</td>
+        <td style="color:var(--red)">${fmt(sig.sl, 4)}</td>
+        <td style="color:var(--yellow)">${ind.rsi_14 ?? "—"}</td>
+        <td style="color:var(--purple)">${fg.value != null ? fg.value + "<br><span style='font-size:10px;color:var(--muted)'>" + fg.classification + "</span>" : "—"}</td>
+        <td class="${priceClass}">${priceStr}</td>
+        <td style="color:var(--muted)">${orders} placed</td>
+      `;
+      tbody.appendChild(row);
+    });
+  }
+
+  async function refresh() {
+    await Promise.all([loadSummary(), loadTrades()]);
+    document.getElementById("last-updated").textContent =
+      "Updated " + new Date().toLocaleTimeString();
+  }
+
+  refresh();
+  setInterval(refresh, 30000);
+</script>
+</body>
+</html>
