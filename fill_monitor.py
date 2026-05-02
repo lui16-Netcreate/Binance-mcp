@@ -250,6 +250,82 @@ def check_fills(client: BinanceClient | None):
         save_trades(trades)
 
 
+# ── TP fill check → cancel remaining open entries ─────────────────────────────
+
+def check_tp_fills(client: BinanceClient | None):
+    trades  = load_trades()
+    changed = False
+
+    for trade in trades:
+        signal  = trade["signal"]
+        result  = trade["result"]
+        symbol  = signal["symbol"]
+        orders  = result.get("placed_orders", [])
+
+        # Skip if entries already cleaned up
+        if trade.get("entries_cancelled"):
+            continue
+
+        # Collect all TP order IDs across filled entries
+        tp_order_ids = [
+            tp["orderId"]
+            for order in orders
+            for tp in order.get("tp_orders", [])
+            if tp.get("orderId") and str(tp["orderId"]) != "DRY_RUN"
+        ]
+        if not tp_order_ids:
+            continue
+
+        # Check if any TP has filled
+        any_tp_filled = False
+        for tp_id in tp_order_ids:
+            try:
+                if DRY_RUN or client is None:
+                    any_tp_filled = True
+                    break
+                status = client.get_order(symbol=symbol, orderId=tp_id)
+                if status["status"] == "FILLED":
+                    any_tp_filled = True
+                    logging.info(f"🎯 TP fill detected on {symbol} (order {tp_id})")
+                    break
+            except BinanceAPIException as e:
+                logging.warning(f"Could not query TP order {tp_id}: {e.message}")
+
+        if not any_tp_filled:
+            continue
+
+        # Cancel all remaining OPEN entry orders for this trade
+        cancelled = []
+        for order in orders:
+            if order.get("tp_sl_placed") or str(order.get("orderId")) == "DRY_RUN":
+                continue
+            try:
+                if DRY_RUN or client is None:
+                    logging.info(f"[DRY-RUN] Would cancel entry order {order['orderId']}")
+                    cancelled.append(order["orderId"])
+                else:
+                    status = client.get_order(symbol=symbol, orderId=order["orderId"])
+                    if status["status"] in ("NEW", "PARTIALLY_FILLED"):
+                        client.cancel_order(symbol=symbol, orderId=order["orderId"])
+                        cancelled.append(order["orderId"])
+                        logging.info(f"❌ Cancelled open entry {order['orderId']} ({symbol})")
+                order["binance_status"] = "CANCELLED_AFTER_TP"
+                order["tp_sl_placed"]   = True
+            except BinanceAPIException as e:
+                logging.warning(f"Could not cancel entry {order['orderId']}: {e.message}")
+
+        if cancelled:
+            trade["entries_cancelled"] = True
+            changed = True
+            send_telegram(
+                f"🧹 *{symbol}* — TP hit!\n"
+                f"Cancelled `{len(cancelled)}` unfilled entr{'y' if len(cancelled)==1 else 'ies'}."
+            )
+
+    if changed:
+        save_trades(trades)
+
+
 def main():
     b_key    = os.getenv("BINANCE_API_KEY", "")
     b_secret = os.getenv("BINANCE_API_SECRET", "")
@@ -275,6 +351,7 @@ def main():
     while True:
         try:
             check_fills(client)
+            check_tp_fills(client)
         except Exception as e:
             logging.error(f"Poll error: {e}")
         time.sleep(POLL_INTERVAL)
