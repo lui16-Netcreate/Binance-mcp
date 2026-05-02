@@ -76,7 +76,15 @@
   "✅ ETH LONG opened: 3 orders placed"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- PHASE 4 — TRADE LOG & INTELLIGENCE    ⬜ PLANNED
+ PHASE 3.5 — FILL MONITOR              ✅ COMPLETE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  fill_monitor.py polls every 60s for filled entry orders.
+  On fill → places TP1/2/3/4 limit sells + SL stop-limit.
+  Updates trades.json + sends Telegram confirmation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ PHASE 4 — TRADE LOG & INTELLIGENCE    ✅ COMPLETE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   ┌──────────────────────────────────────────────┐
