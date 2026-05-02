@@ -10,24 +10,46 @@ Usage:
 """
 import json
 import sys
+import secrets
+import os
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
+from dotenv import load_dotenv
 import uvicorn
 import binance_data
 
+load_dotenv()
+
 TRADES_LOG = Path(__file__).parent / "trades.json"
 
-app = FastAPI(title="Crypto Auto-Trader Dashboard")
+app      = FastAPI(title="Crypto Auto-Trader Dashboard")
+security = HTTPBasic()
+
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    valid_user = secrets.compare_digest(
+        credentials.username.encode(), os.getenv("DASHBOARD_USER", "admin").encode()
+    )
+    valid_pass = secrets.compare_digest(
+        credentials.password.encode(), os.getenv("DASHBOARD_PASS", "changeme").encode()
+    )
+    if not (valid_user and valid_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
+async def index(_: None = Depends(require_auth)):
     return (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
 
 
 @app.get("/api/trades")
-async def api_trades():
+async def api_trades(_: None = Depends(require_auth)):
     if not TRADES_LOG.exists():
         return JSONResponse([])
     trades = json.loads(TRADES_LOG.read_text())
@@ -47,7 +69,7 @@ async def api_trades():
 
 
 @app.get("/api/summary")
-async def api_summary():
+async def api_summary(_: None = Depends(require_auth)):
     if not TRADES_LOG.exists():
         return JSONResponse({"total": 0, "longs": 0, "shorts": 0, "errors": 0,
                              "symbols": [], "avg_rsi": None, "avg_fg": None,
