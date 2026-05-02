@@ -14,7 +14,7 @@ import time
 import logging
 import requests
 from dotenv import load_dotenv
-import binance
+import binance_data as binance
 
 load_dotenv()
 

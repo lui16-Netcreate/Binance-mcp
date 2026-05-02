@@ -4,3 +4,5 @@ uvicorn
 requests
 plyer
 python-dotenv
+telethon
+python-binance

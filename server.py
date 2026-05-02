@@ -7,7 +7,7 @@ Tools:
 import json
 from mcp.server.fastmcp import FastMCP
 from db import init_db, get_signals, clear_signals
-import binance
+import binance_data as binance
 
 init_db()
 mcp = FastMCP("TradingView Signals")
