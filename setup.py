@@ -230,7 +230,7 @@ def setup_anthropic() -> str:
                 return api_key
 
 
-def setup_position_size() -> str:
+def setup_position_size() -> tuple[str, str]:
     header("Step 6 — Position Sizing")
     info("How much USDT to spend per entry order.")
     info("Each signal places up to 3 orders, so total per signal = amount × 3.")
@@ -246,9 +246,26 @@ def setup_position_size() -> str:
                 warn("Binance US requires at least $10 per order. Enter $10 or more.")
                 continue
             success(f"${val:.0f} per order — max ${val*3:.0f} per signal (3 entries).")
-            return str(val)
+            break
         except ValueError:
             warn("Enter a number (e.g. 11)")
+
+    info("")
+    info("Stop-loss is placed automatically when an entry order fills.")
+    info("It triggers when your loss reaches a set % of the order amount.")
+    info(f"Example: 0.50 = stop out at 50% loss (${val*0.5:.2f} on a ${val:.0f} order)")
+
+    while True:
+        pct = prompt("Max loss per order as decimal (e.g. 0.50 for 50%)")
+        try:
+            pct_val = float(pct)
+            if not 0.01 <= pct_val <= 1.0:
+                warn("Enter a value between 0.01 and 1.00.")
+                continue
+            success(f"SL triggers at {pct_val*100:.0f}% loss — max ${val*pct_val:.2f} per order.")
+            return str(val), str(pct_val)
+        except ValueError:
+            warn("Enter a decimal number (e.g. 0.50)")
 
 
 def setup_dashboard() -> tuple[str, str]:
@@ -289,6 +306,9 @@ ANTHROPIC_API_KEY={values['anthropic_key']}
 # Position sizing — fixed dollar amount per entry order
 ORDER_SIZE_USD={values['order_size']}
 
+# Stop-loss as fraction of order value lost (0.50 = stop out at 50% loss)
+SL_LOSS_PCT={values['sl_loss_pct']}
+
 # Dashboard credentials
 DASHBOARD_USER={values['dash_user']}
 DASHBOARD_PASS={values['dash_pass']}
@@ -321,7 +341,7 @@ def main():
     group                  = setup_signal_group()
     binance_key, binance_secret = setup_binance()
     anthropic_key          = setup_anthropic()
-    order_size             = setup_position_size()
+    order_size, sl_loss_pct = setup_position_size()
     dash_user, dash_pass   = setup_dashboard()
 
     # Write .env
@@ -336,6 +356,7 @@ def main():
         "binance_secret": binance_secret,
         "anthropic_key":  anthropic_key,
         "order_size":     order_size,
+        "sl_loss_pct":    sl_loss_pct,
         "dash_user":      dash_user,
         "dash_pass":      dash_pass,
     })

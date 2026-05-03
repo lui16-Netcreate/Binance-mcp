@@ -38,6 +38,7 @@ TRADES_LOG    = Path(__file__).parent / "trades.json"
 POLL_INTERVAL = 60   # seconds between polls
 SL_SLIP       = 0.003  # 0.3% below SL price for the limit leg (ensures fill)
 TP_SPLIT      = [0.40, 0.30, 0.20, 0.10]
+SL_LOSS_PCT   = float(os.getenv("SL_LOSS_PCT", "0.50"))  # max loss per order as fraction of order value
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ def place_tp_sl(
     tps: dict,
     sl: float,
     sym_info: dict,
+    avg_fill_price: float = 0.0,
 ) -> dict:
     lot_step  = _get_filter(sym_info, "LOT_SIZE", "stepSize")
     tick_size = _get_filter(sym_info, "PRICE_FILTER", "tickSize")
@@ -131,9 +133,16 @@ def place_tp_sl(
             logging.error(f"TP order failed @ {tp_price}: {e.message}")
             tp_orders.append({"price": price, "qty": qty, "orderId": None, "error": e.message})
 
-    # SL stop-limit sell — limit leg slightly below stop to ensure fill
-    sl_stop  = _round_to(sl, tick_size)
-    sl_limit = _round_to(sl * (1 - SL_SLIP), tick_size)
+    # SL stop-limit sell — use fill-price-based SL (SL_LOSS_PCT of order value)
+    # SL_LOSS_PCT=0.50 means stop out when position is 50% of ORDER_SIZE_USD in loss
+    if avg_fill_price > 0:
+        order_size = float(os.getenv("ORDER_SIZE_USD", "11"))
+        loss_per_unit = (order_size * SL_LOSS_PCT) / filled_qty if filled_qty > 0 else 0
+        sl_price = avg_fill_price - loss_per_unit
+    else:
+        sl_price = sl  # fallback to signal's SL if no fill price available
+    sl_stop  = _round_to(sl_price, tick_size)
+    sl_limit = _round_to(sl_price * (1 - SL_SLIP), tick_size)
     sl_qty   = _round_to(filled_qty, lot_step)
     sl_order = {}
 
@@ -237,7 +246,7 @@ def check_fills(client: BinanceClient | None):
             logging.info(f"✅ Fill detected: {filled_qty} {symbol} @ {avg_price:.4f}")
 
             sym_info = None if (DRY_RUN or client is None) else client.get_symbol_info(symbol)
-            tp_sl    = place_tp_sl(client, symbol, filled_qty, signal["tps"], signal["sl"], sym_info or {})
+            tp_sl    = place_tp_sl(client, symbol, filled_qty, signal["tps"], signal["sl"], sym_info or {}, avg_fill_price=avg_price)
 
             order["tp_orders"]   = tp_sl["tp_orders"]
             order["sl_order"]    = tp_sl["sl_order"]
