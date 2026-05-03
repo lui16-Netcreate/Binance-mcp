@@ -230,6 +230,27 @@ def setup_anthropic() -> str:
                 return api_key
 
 
+def setup_position_size() -> str:
+    header("Step 6 — Position Sizing")
+    info("How much USDT to spend per entry order.")
+    info("Each signal places up to 3 orders, so total per signal = amount × 3.")
+    info("")
+    info("Binance US minimum per order: $10")
+    info("Example: $11/order × 3 = $33 max per signal")
+
+    while True:
+        amount = prompt("Fixed dollar amount per order (e.g. 11)")
+        try:
+            val = float(amount)
+            if val < 10:
+                warn("Binance US requires at least $10 per order. Enter $10 or more.")
+                continue
+            success(f"${val:.0f} per order — max ${val*3:.0f} per signal (3 entries).")
+            return str(val)
+        except ValueError:
+            warn("Enter a number (e.g. 11)")
+
+
 def setup_dashboard() -> tuple[str, str]:
     header("Step 6 — Dashboard Password")
     info("Protects your trading dashboard from public access.")
@@ -265,6 +286,9 @@ BINANCE_API_SECRET={values['binance_secret']}
 # Anthropic API key (weekly reports)
 ANTHROPIC_API_KEY={values['anthropic_key']}
 
+# Position sizing — fixed dollar amount per entry order
+ORDER_SIZE_USD={values['order_size']}
+
 # Dashboard credentials
 DASHBOARD_USER={values['dash_user']}
 DASHBOARD_PASS={values['dash_pass']}
@@ -297,6 +321,7 @@ def main():
     group                  = setup_signal_group()
     binance_key, binance_secret = setup_binance()
     anthropic_key          = setup_anthropic()
+    order_size             = setup_position_size()
     dash_user, dash_pass   = setup_dashboard()
 
     # Write .env
@@ -310,6 +335,7 @@ def main():
         "binance_key":    binance_key,
         "binance_secret": binance_secret,
         "anthropic_key":  anthropic_key,
+        "order_size":     order_size,
         "dash_user":      dash_user,
         "dash_pass":      dash_pass,
     })

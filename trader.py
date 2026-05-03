@@ -166,14 +166,25 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
         tick_size    = _get_filter(sym_info, "PRICE_FILTER", "tickSize")
         min_notional = float(_get_filter(sym_info, "MIN_NOTIONAL", "minNotional") or 10)
         usdt_balance = get_usdt_balance(client)
-        per_order    = usdt_balance * 0.01
-        min_balance  = min_notional / 0.01
+        per_order    = float(os.getenv("ORDER_SIZE_USD", str(usdt_balance * 0.01)))
 
         if per_order < min_notional:
             msg = (
-                f"Balance too low — need at least ${min_balance:,.0f} USDT "
-                f"(have ${usdt_balance:,.2f}). Min order notional: ${min_notional}"
+                f"ORDER_SIZE_USD (${per_order}) is below Binance minimum "
+                f"notional (${min_notional}). Increase ORDER_SIZE_USD in .env."
             )
+            logging.error(f"⚠️  {msg}")
+            errors.append(msg)
+            send_telegram(f"⚠️ *{symbol} skipped*\n{msg}")
+            return {
+                "symbol": symbol, "direction": direction,
+                "placed_orders": [], "usdt_balance": usdt_balance,
+                "errors": errors,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        if usdt_balance < per_order:
+            msg = f"Insufficient balance — need ${per_order} but have ${usdt_balance:.2f} USDT"
             logging.error(f"⚠️  {msg}")
             errors.append(msg)
             send_telegram(f"⚠️ *{symbol} skipped*\n{msg}")
@@ -265,7 +276,9 @@ def build_confirmation(signal: dict, result: dict) -> str:
         msg += f"🎯 TPs:\n{tp_str}\n"
 
     msg += f"🛑 SL: `${sl:,.2f}`\n"
-    msg += f"💼 Balance used: `${result['usdt_balance'] * 0.03:,.2f}` (3% of `${result['usdt_balance']:,.2f}`)\n"
+    order_size = float(os.getenv("ORDER_SIZE_USD", str(result['usdt_balance'] * 0.01)))
+    total_used = order_size * len(placed)
+    msg += f"💼 Total deployed: `${total_used:,.2f}` (`${order_size:.0f}` × {len(placed)} orders)\n"
 
     if errors:
         msg += "\n⚠️ " + "\n⚠️ ".join(errors)
