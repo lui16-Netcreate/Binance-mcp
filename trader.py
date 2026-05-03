@@ -162,15 +162,33 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
     else:
         sym_info     = client.get_symbol_info(symbol)
         lot_step     = _get_filter(sym_info, "LOT_SIZE", "stepSize")
+        min_qty      = float(_get_filter(sym_info, "LOT_SIZE", "minQty"))
         tick_size    = _get_filter(sym_info, "PRICE_FILTER", "tickSize")
+        min_notional = float(_get_filter(sym_info, "MIN_NOTIONAL", "minNotional") or 10)
         usdt_balance = get_usdt_balance(client)
         per_order    = usdt_balance * 0.01
+        min_balance  = min_notional / 0.01
+
+        if per_order < min_notional:
+            msg = (
+                f"Balance too low — need at least ${min_balance:,.0f} USDT "
+                f"(have ${usdt_balance:,.2f}). Min order notional: ${min_notional}"
+            )
+            logging.error(f"⚠️  {msg}")
+            errors.append(msg)
+            send_telegram(f"⚠️ *{symbol} skipped*\n{msg}")
+            return {
+                "symbol": symbol, "direction": direction,
+                "placed_orders": [], "usdt_balance": usdt_balance,
+                "errors": errors,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
 
         for entry in entries:
             qty   = _round_to(per_order / entry, lot_step)
             price = _round_to(entry, tick_size)
-            if qty <= 0:
-                errors.append(f"Qty rounds to 0 at entry {entry} — balance too low?")
+            if qty <= 0 or qty < min_qty:
+                errors.append(f"Qty {qty} below minQty {min_qty} at entry {entry}")
                 continue
             try:
                 order = client.order_limit_buy(
