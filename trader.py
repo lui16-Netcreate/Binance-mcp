@@ -58,18 +58,18 @@ def send_telegram(msg: str):
 
 
 # ── Signal parser ─────────────────────────────────────────────────────────────
-# Handles format:
+# Handles variations like:
 #   $ETH - I like 2,352 - 2,328 for a LIMIT LONG.
+#   $HIGH - I am trying a LONG here 0.2082 - 0.2060
 #   TP1: 2,376 / TP2: 2,399.50 / TP3: 2,423 / TP4: 2,446
 #   SL: 2,248 or manual
 
-_P          = r"[\d,]+\.?\d*"
-_SYMBOL_RE  = re.compile(r"\$([A-Z]+)", re.I)
-_DIR_RE     = re.compile(r"LIMIT\s+(LONG|SHORT)", re.I)
-_RANGE_RE   = re.compile(rf"I like\s+({_P})\s*[-–]\s*({_P})\s+for", re.I)
-_SINGLE_RE  = re.compile(rf"I like\s+({_P})\s+for", re.I)
-_TP_RE      = re.compile(rf"TP(\d)\s*[:/]\s*({_P})", re.I)
-_SL_RE      = re.compile(rf"SL\s*[:/]\s*({_P})", re.I)
+_P         = r"[\d,]+\.?\d*"
+_SYMBOL_RE = re.compile(r"\$([A-Z]+)", re.I)
+_DIR_RE    = re.compile(r"\b(LONG|SHORT)\b", re.I)
+_RANGE_RE  = re.compile(rf"({_P})\s*[-–]\s*({_P})")   # generic X - Y
+_TP_RE     = re.compile(rf"TP(\d)\s*[:/]\s*({_P})", re.I)
+_SL_RE     = re.compile(rf"SL\s*[:/]\s*({_P})", re.I)
 
 
 def _p(s: str) -> float:
@@ -77,7 +77,7 @@ def _p(s: str) -> float:
 
 
 def parse_signal(text: str) -> dict | None:
-    sym = _SYMBOL_RE.search(text)
+    sym  = _SYMBOL_RE.search(text)
     dir_ = _DIR_RE.search(text)
     sl   = _SL_RE.search(text)
     if not sym or not dir_ or not sl:
@@ -87,7 +87,13 @@ def parse_signal(text: str) -> dict | None:
     direction = dir_.group(1).upper()
     sl_price  = _p(sl.group(1))
 
-    range_m = _RANGE_RE.search(text)
+    # Find entry range on the same line as the direction word (avoids TP/SL lines)
+    dir_line = next(
+        (line for line in text.splitlines() if _DIR_RE.search(line)),
+        "",
+    )
+    range_m = _RANGE_RE.search(dir_line)
+
     if range_m:
         a, b    = _p(range_m.group(1)), _p(range_m.group(2))
         top     = max(a, b)
@@ -95,7 +101,9 @@ def parse_signal(text: str) -> dict | None:
         mid     = round((top + bottom) / 2, 8)
         entries = [top, mid, bottom]
     else:
-        single = _SINGLE_RE.search(text)
+        # Single-price signal: take the first number after the direction word
+        after_dir = dir_line[dir_.end():]
+        single = re.search(rf"({_P})", after_dir)
         if not single:
             return None
         entries = [_p(single.group(1))]
