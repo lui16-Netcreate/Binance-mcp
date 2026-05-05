@@ -96,7 +96,7 @@ def categorize_trades(trades: list[dict]) -> tuple[list, list]:
         filled   = [o for o in live_orders if o.get("filled_qty")]
         unfilled = [o for o in live_orders if not o.get("filled_qty") and not o.get("tp_sl_placed")]
 
-        if filled:
+        if filled and not trade.get("trade_closed"):
             avg_prices = [o["avg_fill_price"] for o in filled if o.get("avg_fill_price")]
             avg_entry  = sum(avg_prices) / len(avg_prices) if avg_prices else None
             tp_hit     = trade.get("entries_cancelled", False)

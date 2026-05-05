@@ -64,6 +64,21 @@ def _round_to(value: float, step: str) -> float:
     return float(Decimal(str(value)).quantize(Decimal(step), rounding=ROUND_DOWN))
 
 
+def _calc_pnl(entry_price: float, exit_price: float, qty: float) -> tuple[float, float]:
+    """Returns (pnl_usdt, pnl_pct) for a LONG spot trade."""
+    pnl_usdt = (exit_price - entry_price) * qty
+    pnl_pct  = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0
+    return round(pnl_usdt, 4), round(pnl_pct, 2)
+
+
+def _avg_fill_price_from_status(status: dict, fallback: float) -> tuple[float, float]:
+    """Extracts actual avg fill price and qty from a Binance order status dict."""
+    exec_qty  = float(status.get("executedQty", 0))
+    quote_qty = float(status.get("cummulativeQuoteQty", 0))
+    avg_price = (quote_qty / exec_qty) if exec_qty > 0 else fallback
+    return avg_price, exec_qty
+
+
 def _get_filter(sym_info: dict, filter_type: str, field: str) -> str:
     for f in sym_info.get("filters", []):
         if f["filterType"] == filter_type:
@@ -259,77 +274,176 @@ def check_fills(client: BinanceClient | None):
         save_trades(trades)
 
 
-# ── TP fill check → cancel remaining open entries ─────────────────────────────
+# ── Exit fill monitor (TP + SL) with P&L tracking ────────────────────────────
 
-def check_tp_fills(client: BinanceClient | None):
+def _cancel_open_entries(client: BinanceClient | None, trade: dict, symbol: str, orders: list):
+    cancelled = []
+    for order in orders:
+        if order.get("tp_sl_placed") or str(order.get("orderId")) == "DRY_RUN":
+            continue
+        try:
+            if client:
+                status = client.get_order(symbol=symbol, orderId=order["orderId"])
+                if status["status"] in ("NEW", "PARTIALLY_FILLED"):
+                    client.cancel_order(symbol=symbol, orderId=order["orderId"])
+                    cancelled.append(order["orderId"])
+                    logging.info(f"❌ Cancelled open entry {order['orderId']} ({symbol})")
+            order["binance_status"] = "CANCELLED_AFTER_TP"
+            order["tp_sl_placed"]   = True
+        except BinanceAPIException as e:
+            logging.warning(f"Could not cancel entry {order['orderId']}: {e.message}")
+
+    if cancelled:
+        trade["entries_cancelled"] = True
+        send_telegram(
+            f"🧹 *{symbol}* — TP hit!\n"
+            f"Cancelled `{len(cancelled)}` unfilled entr{'y' if len(cancelled)==1 else 'ies'}."
+        )
+
+
+def _check_trade_closed(trade: dict):
+    """Sum P&L and mark trade closed when all exit orders are resolved."""
+    result  = trade.get("result", {})
+    orders  = result.get("placed_orders", [])
+    symbol  = trade["signal"]["symbol"]
+
+    filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
+    if not filled_entries:
+        return
+
+    total_pnl  = 0.0
+    all_closed = True
+
+    for entry in filled_entries:
+        sl   = entry.get("sl_order", {})
+        tps  = entry.get("tp_orders", [])
+
+        if sl.get("status") == "FILLED":
+            total_pnl += sl.get("pnl_usdt", 0)
+            continue  # entry fully resolved via SL
+
+        if tps:
+            total_pnl += sum(tp.get("pnl_usdt", 0) for tp in tps if tp.get("status") == "FILLED")
+            if not all(tp.get("status") in ("FILLED", "CANCELED") for tp in tps):
+                all_closed = False
+        else:
+            all_closed = False
+
+    if all_closed and filled_entries and not trade.get("trade_closed"):
+        sign = "+" if total_pnl >= 0 else ""
+        trade["trade_closed"]   = True
+        trade["closed_at"]      = datetime.now(timezone.utc).isoformat()
+        trade["total_pnl_usdt"] = round(total_pnl, 4)
+        emoji = "✅" if total_pnl >= 0 else "❌"
+        send_telegram(
+            f"{emoji} *{symbol} trade closed*\n"
+            f"Total P&L: `{sign}{total_pnl:.2f} USDT`"
+        )
+        logging.info(f"Trade closed: {symbol}  P&L={sign}{total_pnl:.2f} USDT")
+
+
+def check_exit_fills(client: BinanceClient | None):
+    """Polls Binance for TP and SL fills, records P&L, notifies via Telegram."""
     trades  = load_trades()
     changed = False
 
     for trade in trades:
+        if trade.get("trade_closed"):
+            continue
+
         signal  = trade["signal"]
-        result  = trade["result"]
+        result  = trade.get("result", {})
         symbol  = signal["symbol"]
         orders  = result.get("placed_orders", [])
 
-        # Skip if entries already cleaned up
-        if trade.get("entries_cancelled"):
+        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
+        if not filled_entries:
             continue
 
-        # Collect all TP order IDs across filled entries
-        tp_order_ids = [
-            tp["orderId"]
-            for order in orders
-            for tp in order.get("tp_orders", [])
-            if tp.get("orderId") and str(tp["orderId"]) != "DRY_RUN"
-        ]
-        if not tp_order_ids:
-            continue
+        any_new_tp_hit = False
 
-        # Check if any TP has filled
-        any_tp_filled = False
-        for tp_id in tp_order_ids:
-            try:
-                if DRY_RUN or client is None:
-                    any_tp_filled = True
-                    break
-                status = client.get_order(symbol=symbol, orderId=tp_id)
-                if status["status"] == "FILLED":
-                    any_tp_filled = True
-                    logging.info(f"🎯 TP fill detected on {symbol} (order {tp_id})")
-                    break
-            except BinanceAPIException as e:
-                logging.warning(f"Could not query TP order {tp_id}: {e.message}")
+        for entry in filled_entries:
+            entry_price = entry.get("avg_fill_price", 0)
 
-        if not any_tp_filled:
-            continue
+            # ── Check each TP order ───────────────────────────────────────────
+            for idx, tp in enumerate(entry.get("tp_orders", []), start=1):
+                if tp.get("pnl_notified") or str(tp.get("orderId")) in ("DRY_RUN", "", "None", None):
+                    continue
+                try:
+                    status = client.get_order(symbol=symbol, orderId=tp["orderId"]) if client else None
+                except BinanceAPIException as e:
+                    logging.warning(f"TP order {tp['orderId']} query failed: {e.message}")
+                    continue
 
-        # Cancel all remaining OPEN entry orders for this trade
-        cancelled = []
-        for order in orders:
-            if order.get("tp_sl_placed") or str(order.get("orderId")) == "DRY_RUN":
-                continue
-            try:
-                if DRY_RUN or client is None:
-                    logging.info(f"[DRY-RUN] Would cancel entry order {order['orderId']}")
-                    cancelled.append(order["orderId"])
-                else:
-                    status = client.get_order(symbol=symbol, orderId=order["orderId"])
-                    if status["status"] in ("NEW", "PARTIALLY_FILLED"):
-                        client.cancel_order(symbol=symbol, orderId=order["orderId"])
-                        cancelled.append(order["orderId"])
-                        logging.info(f"❌ Cancelled open entry {order['orderId']} ({symbol})")
-                order["binance_status"] = "CANCELLED_AFTER_TP"
-                order["tp_sl_placed"]   = True
-            except BinanceAPIException as e:
-                logging.warning(f"Could not cancel entry {order['orderId']}: {e.message}")
+                if not status or status["status"] != "FILLED":
+                    continue
 
-        if cancelled:
-            trade["entries_cancelled"] = True
+                avg_price, fill_qty = _avg_fill_price_from_status(status, tp["price"])
+                pnl_usdt, pnl_pct   = _calc_pnl(entry_price, avg_price, fill_qty)
+
+                tp.update({
+                    "status":         "FILLED",
+                    "avg_fill_price": round(avg_price, 8),
+                    "filled_qty":     fill_qty,
+                    "filled_at":      datetime.now(timezone.utc).isoformat(),
+                    "pnl_usdt":       pnl_usdt,
+                    "pnl_pct":        pnl_pct,
+                    "pnl_notified":   True,
+                })
+                changed        = True
+                any_new_tp_hit = True
+
+                sign = "+" if pnl_usdt >= 0 else ""
+                send_telegram(
+                    f"🎯 *{symbol} TP{idx} hit!*\n"
+                    f"Sold `{fill_qty}` @ `${avg_price:,.4f}`\n"
+                    f"Entry: `${entry_price:,.4f}`\n"
+                    f"P&L: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
+                )
+                logging.info(f"🎯 {symbol} TP{idx}: {sign}{pnl_usdt:.2f} USDT ({sign}{pnl_pct:.2f}%)")
+
+            # ── Check SL order ────────────────────────────────────────────────
+            sl = entry.get("sl_order", {})
+            if sl and not sl.get("pnl_notified") and str(sl.get("orderId")) not in ("DRY_RUN", "", "None", None):
+                try:
+                    status = client.get_order(symbol=symbol, orderId=sl["orderId"]) if client else None
+                except BinanceAPIException as e:
+                    logging.warning(f"SL order {sl['orderId']} query failed: {e.message}")
+                    status = None
+
+                if status and status["status"] == "FILLED":
+                    avg_price, fill_qty = _avg_fill_price_from_status(status, sl.get("price", 0))
+                    pnl_usdt, pnl_pct   = _calc_pnl(entry_price, avg_price, fill_qty)
+
+                    sl.update({
+                        "status":         "FILLED",
+                        "avg_fill_price": round(avg_price, 8),
+                        "filled_qty":     fill_qty,
+                        "filled_at":      datetime.now(timezone.utc).isoformat(),
+                        "pnl_usdt":       pnl_usdt,
+                        "pnl_pct":        pnl_pct,
+                        "pnl_notified":   True,
+                    })
+                    changed = True
+
+                    sign = "+" if pnl_usdt >= 0 else ""
+                    send_telegram(
+                        f"🛑 *{symbol} SL hit*\n"
+                        f"Sold `{fill_qty}` @ `${avg_price:,.4f}`\n"
+                        f"Entry: `${entry_price:,.4f}`\n"
+                        f"P&L: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
+                    )
+                    logging.info(f"🛑 {symbol} SL: {sign}{pnl_usdt:.2f} USDT ({sign}{pnl_pct:.2f}%)")
+
+        # Cancel unfilled entries on first TP hit (only once)
+        if any_new_tp_hit and not trade.get("entries_cancelled"):
+            _cancel_open_entries(client, trade, symbol, orders)
             changed = True
-            send_telegram(
-                f"🧹 *{symbol}* — TP hit!\n"
-                f"Cancelled `{len(cancelled)}` unfilled entr{'y' if len(cancelled)==1 else 'ies'}."
-            )
+
+        # Check if trade is fully resolved
+        _check_trade_closed(trade)
+        if trade.get("trade_closed"):
+            changed = True
 
     if changed:
         save_trades(trades)
@@ -360,7 +474,7 @@ def main():
     while True:
         try:
             check_fills(client)
-            check_tp_fills(client)
+            check_exit_fills(client)
         except Exception as e:
             logging.error(f"Poll error: {e}")
         time.sleep(POLL_INTERVAL)
