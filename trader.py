@@ -142,6 +142,17 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
     if direction == "SHORT":
         msg = "SHORT skipped — Binance US is spot-only (no shorting)"
         logging.warning(f"⚠️  {msg}")
+        tps = signal.get("tps", {})
+        tp_str = "  ".join(
+            f"TP{i}: `${tps[f'tp{i}']:,.2f}`"
+            for i in range(1, 5) if f"tp{i}" in tps
+        )
+        sl_str = f"`${signal['sl']:,.2f}`" if signal.get("sl") else "?"
+        send_telegram(
+            f"⏭️ *{symbol} SHORT skipped* (spot-only)\n"
+            f"{tp_str}\n"
+            f"SL: {sl_str}"
+        )
         return {
             "symbol": symbol, "direction": direction,
             "placed_orders": [], "usdt_balance": 0,
