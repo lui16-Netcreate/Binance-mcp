@@ -351,8 +351,11 @@ async def main():
         if group.lower() not in title.lower():
             return
 
+        logging.info(f"📩 Message from '{title}':\n{event.raw_text[:300]}")
+
         signal = parse_signal(event.raw_text)
         if not signal:
+            logging.warning("⚠️  Message not parsed as signal — skipped")
             return
 
         logging.info(
