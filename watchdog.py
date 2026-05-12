@@ -12,6 +12,7 @@ alerts once when a process goes down, once when it recovers.
 """
 import os
 import json
+import time
 import subprocess
 import logging
 from pathlib import Path
@@ -25,7 +26,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-STATE_FILE = Path(__file__).parent / "watchdog_state.json"
+STATE_FILE      = Path(__file__).parent / "watchdog_state.json"
+TRADER_HB       = Path(__file__).parent / "trader.heartbeat"
+HB_MAX_AGE_SECS = 180  # trader heartbeat must be < 3 min old
 
 PROCESSES = {
     "trader":       "trader.py",
@@ -50,7 +53,14 @@ def send_telegram(msg: str):
         logging.warning(f"Telegram failed: {e}")
 
 
-def is_running(script: str) -> bool:
+def is_running(name: str, script: str) -> bool:
+    if name == "trader":
+        # Use heartbeat for trader — pgrep can't detect frozen/ghost processes
+        if not TRADER_HB.exists():
+            return False
+        age = time.time() - float(TRADER_HB.read_text().strip())
+        return age < HB_MAX_AGE_SECS
+
     result = subprocess.run(
         ["pgrep", "-f", f"python.*{script}"],
         capture_output=True,
@@ -72,7 +82,7 @@ def main():
     state = load_state()
 
     for name, script in PROCESSES.items():
-        currently_up = is_running(script)
+        currently_up = is_running(name, script)
         was_up       = state.get(name, True)
 
         if was_up and not currently_up:

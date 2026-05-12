@@ -372,6 +372,14 @@ async def main():
         log_trade(signal, result, confluence)
         send_telegram(build_confirmation(signal, result))
 
+    HEARTBEAT = Path(__file__).parent / "trader.heartbeat"
+
+    async def write_heartbeat():
+        while True:
+            HEARTBEAT.write_text(str(datetime.now(timezone.utc).timestamp()))
+            await asyncio.sleep(60)
+
+    asyncio.ensure_future(write_heartbeat())
     await tg.run_until_disconnected()
 
 
