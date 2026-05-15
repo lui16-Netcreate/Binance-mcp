@@ -3,7 +3,8 @@ Binance public API helpers — no API key required.
 """
 import requests
 
-BASE = "https://api.binance.us/api/v3"
+BASE  = "https://api.binance.us/api/v3"
+FAPI  = "https://fapi.binance.com"        # Binance global futures — public endpoints, no key needed
 
 
 def get_price(symbol: str) -> dict:
@@ -113,18 +114,15 @@ def get_fear_greed() -> dict:
 
 
 def get_funding_rate(symbol: str = "BTCUSDT") -> dict:
-    """Fetch the current perpetual futures funding rate from OKX (positive=longs pay, negative=shorts pay)."""
-    # Convert BTCUSDT → BTC-USDT-SWAP format for OKX
-    base = symbol.upper().replace("USDT", "")
-    inst_id = f"{base}-USDT-SWAP"
+    """Fetch the current perpetual futures funding rate from Binance (positive=longs pay, negative=shorts pay)."""
     r = requests.get(
-        "https://www.okx.com/api/v5/public/funding-rate",
-        params={"instId": inst_id},
+        f"{FAPI}/fapi/v1/premiumIndex",
+        params={"symbol": symbol.upper()},
         timeout=10,
     )
     r.raise_for_status()
-    data = r.json()["data"][0]
-    rate = float(data["fundingRate"])
+    data = r.json()
+    rate = float(data["lastFundingRate"])
     return {
         "symbol": symbol.upper(),
         "funding_rate": round(rate * 100, 4),
@@ -133,19 +131,17 @@ def get_funding_rate(symbol: str = "BTCUSDT") -> dict:
 
 
 def get_long_short_ratio(symbol: str = "BTCUSDT", period: str = "1h") -> dict:
-    """Long/short ratio from OKX — ratio > 1 means more longs, < 1 means more shorts."""
-    base = symbol.upper().replace("USDT", "")
-    inst_id = f"{base}-USDT-SWAP"
+    """Long/short ratio from Binance futures — ratio > 1 means more longs, < 1 means more shorts."""
     r = requests.get(
-        "https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio",
-        params={"instId": inst_id, "period": period},
+        f"{FAPI}/futures/data/globalLongShortAccountRatio",
+        params={"symbol": symbol.upper(), "period": period, "limit": 1},
         timeout=10,
     )
     r.raise_for_status()
-    data = r.json()["data"]
+    data = r.json()
     if not data:
         return {"symbol": symbol.upper(), "long_short_ratio": None, "sentiment": "unknown"}
-    ratio = float(data[0][1])
+    ratio = float(data[0]["longShortRatio"])
     return {
         "symbol": symbol.upper(),
         "long_short_ratio": round(ratio, 4),
@@ -154,23 +150,21 @@ def get_long_short_ratio(symbol: str = "BTCUSDT", period: str = "1h") -> dict:
 
 
 def get_open_interest(symbol: str = "BTCUSDT") -> dict:
-    """Open interest from OKX — rising OI with falling price = bearish pressure."""
-    base = symbol.upper().replace("USDT", "")
-    inst_id = f"{base}-USDT-SWAP"
+    """Open interest from Binance futures — rising OI with falling price = bearish pressure."""
     r = requests.get(
-        "https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume",
-        params={"instId": inst_id, "period": "1H"},
+        f"{FAPI}/futures/data/openInterestHist",
+        params={"symbol": symbol.upper(), "period": "1h", "limit": 1},
         timeout=10,
     )
     r.raise_for_status()
-    data = r.json()["data"]
+    data = r.json()
     if not data:
         return {"symbol": symbol.upper(), "open_interest": None}
     latest = data[0]
     return {
         "symbol": symbol.upper(),
-        "open_interest": float(latest[1]),
-        "open_interest_usd": float(latest[2]),
+        "open_interest": float(latest["sumOpenInterest"]),
+        "open_interest_usd": float(latest["sumOpenInterestValue"]),
     }
 
 
