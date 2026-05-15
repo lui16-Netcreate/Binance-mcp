@@ -74,6 +74,109 @@ def handle_status():
     send(msg)
 
 
+def handle_pending():
+    import json
+    from pathlib import Path
+    import requests as req
+
+    def _price(symbol):
+        try:
+            r = req.get(
+                "https://api.binance.us/api/v3/ticker/price",
+                params={"symbol": symbol}, timeout=5,
+            )
+            return float(r.json()["price"])
+        except Exception:
+            return None
+
+    trades_path = Path(__file__).parent / "trades.json"
+    trades = json.loads(trades_path.read_text()) if trades_path.exists() else []
+
+    pending_lines = []
+    active_lines  = []
+
+    for trade in trades:
+        if trade.get("trade_closed"):
+            continue
+        signal  = trade["signal"]
+        result  = trade.get("result", {})
+        orders  = result.get("placed_orders", [])
+        symbol  = signal["symbol"]
+        dir_    = signal.get("direction", "LONG")
+        tps     = signal.get("tps", {})
+        sl      = signal.get("sl")
+        src     = trade.get("source", "telegram")
+        src_tag = "✍️" if src == "manual" else "🤖"
+
+        skip = {"CANCELED", "CANCELLED_AFTER_TP"}
+        live = [o for o in orders if o.get("binance_status") not in skip
+                and str(o.get("orderId", "")) not in ("", "DRY_RUN")]
+        if not live:
+            continue
+
+        filled   = [o for o in live if o.get("filled_qty")]
+        unfilled = [o for o in live if not o.get("filled_qty") and not o.get("tp_sl_placed")]
+
+        now = _price(symbol)
+        price_str = f"  Current: `${now:,.4f}`\n" if now else ""
+
+        if filled:
+            avg_prices = [o["avg_fill_price"] for o in filled if o.get("avg_fill_price")]
+            avg_entry  = sum(avg_prices) / len(avg_prices) if avg_prices else None
+
+            unreal = ""
+            if now and avg_entry:
+                pct = (now - avg_entry) / avg_entry * 100
+                sign = "+" if pct >= 0 else ""
+                unreal = f"  Unrealized: `{sign}{pct:.2f}%`\n"
+
+            sl_line = f"  SL: `${sl:,.4f}`\n" if sl else ""
+
+            # Collect remaining open TP orders
+            open_tps = []
+            for o in filled:
+                for i, tp in enumerate(o.get("tp_orders", []), start=1):
+                    if tp.get("status") not in ("FILLED", "CANCELED") and tp.get("price"):
+                        open_tps.append((i, tp["price"]))
+
+            tp_str = ""
+            if open_tps:
+                tp_str = "  Open TPs: " + "  ".join(f"TP{i}: `${p:,.4f}`" for i, p in open_tps) + "\n"
+
+            trail = "  🛡️ SL trailed to breakeven\n" if any(o.get("sl_trailed") for o in filled) else ""
+            entry_str = f"`${avg_entry:,.4f}`" if avg_entry else "?"
+            active_lines.append(
+                f"{src_tag} *{symbol} {dir_}* — avg entry {entry_str}\n"
+                f"{price_str}{unreal}{sl_line}{tp_str}{trail}"
+            )
+
+        elif unfilled:
+            prices = sorted(set(o["price"] for o in unfilled))
+            prices_str = " / ".join(f"`${p:,.4f}`" for p in prices)
+            sl_line = f"  SL: `${sl:,.4f}`\n" if sl else ""
+            tp_str  = ""
+            if tps:
+                tp_str = "  TPs: " + "  ".join(f"TP{k[-1]}: `${v:,.4f}`" for k, v in sorted(tps.items())) + "\n"
+            pending_lines.append(
+                f"{src_tag} *{symbol} {dir_}* — {len(unfilled)} orders @ {prices_str}\n"
+                f"{price_str}{sl_line}{tp_str}"
+            )
+
+    if not pending_lines and not active_lines:
+        send("📋 *Pending Trades* — No open or pending trades.")
+        return
+
+    msg = "📋 *Pending Trades*\n"
+    if pending_lines:
+        msg += f"\n⏳ *Waiting to fill ({len(pending_lines)}):*\n"
+        msg += "\n".join(pending_lines)
+    if active_lines:
+        msg += f"\n📈 *Active positions ({len(active_lines)}):*\n"
+        msg += "\n".join(active_lines)
+
+    send(msg)
+
+
 def handle_report(days: int = 7):
     from analyzer import load_trades, analyze
     from report import build_report
@@ -186,6 +289,7 @@ def handle_signal(raw_text: str, binance_client):
 HELP = (
     "Commands:\n"
     "/status — health check + positions\n"
+    "/pending — open & pending trades with live price\n"
     "/report — last 7 days (Claude analysis)\n"
     "/report30 — last 30 days\n"
     "/pnl — your signals vs Telegram signals\n"
@@ -237,6 +341,8 @@ def main():
 
             if lower == "/status":
                 handle_status()
+            elif lower == "/pending":
+                handle_pending()
             elif lower == "/pnl":
                 handle_pnl()
             elif lower == "/report30":
