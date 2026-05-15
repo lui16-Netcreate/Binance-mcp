@@ -20,7 +20,7 @@ import asyncio
 import logging
 import json
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from pathlib import Path
 from dotenv import load_dotenv
 import requests
@@ -123,7 +123,8 @@ def parse_signal(text: str) -> dict | None:
 # ── Exchange helpers ──────────────────────────────────────────────────────────
 
 def _round_to(value: float, step: str) -> float:
-    return float(Decimal(str(value)).quantize(Decimal(step), rounding=ROUND_DOWN))
+    step_dec = Decimal(step)
+    return float((Decimal(str(value)) // step_dec) * step_dec)
 
 
 def _get_filter(sym_info: dict, filter_type: str, field: str) -> str:

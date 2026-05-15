@@ -18,7 +18,7 @@ import sys
 import json
 import time
 import logging
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -61,7 +61,8 @@ def send_telegram(msg: str):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _round_to(value: float, step: str) -> float:
-    return float(Decimal(str(value)).quantize(Decimal(step), rounding=ROUND_DOWN))
+    step_dec = Decimal(step)
+    return float((Decimal(str(value)) // step_dec) * step_dec)
 
 
 def _calc_pnl(entry_price: float, exit_price: float, qty: float) -> tuple[float, float]:
