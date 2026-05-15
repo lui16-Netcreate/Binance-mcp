@@ -133,6 +133,15 @@ def _get_filter(sym_info: dict, filter_type: str, field: str) -> str:
     return "0.00001"
 
 
+def _get_min_notional(sym_info: dict) -> float:
+    # Binance renamed MIN_NOTIONAL → NOTIONAL in newer API versions; check both
+    for name in ("NOTIONAL", "MIN_NOTIONAL"):
+        for f in sym_info.get("filters", []):
+            if f["filterType"] == name:
+                return float(f.get("minNotional", 10))
+    return 10.0
+
+
 def get_usdt_balance(client: BinanceClient) -> float:
     for asset in client.get_account()["balances"]:
         if asset["asset"] == "USDT":
@@ -183,9 +192,14 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
         lot_step     = _get_filter(sym_info, "LOT_SIZE", "stepSize")
         min_qty      = float(_get_filter(sym_info, "LOT_SIZE", "minQty"))
         tick_size    = _get_filter(sym_info, "PRICE_FILTER", "tickSize")
-        min_notional = float(_get_filter(sym_info, "MIN_NOTIONAL", "minNotional") or 10)
+        min_notional = _get_min_notional(sym_info)
         usdt_balance = get_usdt_balance(client)
         per_order    = float(os.getenv("ORDER_SIZE_USD", str(usdt_balance * 0.01)))
+        logging.info(
+            f"{symbol} filters — lot_step={lot_step}  min_qty={min_qty}  "
+            f"tick_size={tick_size}  min_notional=${min_notional}  "
+            f"per_order=${per_order:.2f}  balance=${usdt_balance:.2f}"
+        )
 
         if per_order < min_notional:
             msg = (
