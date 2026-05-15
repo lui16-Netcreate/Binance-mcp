@@ -19,10 +19,14 @@ Run in its own screen session on the server:
   Ctrl+A, D to detach
 """
 import os
+import json
 import time
 import logging
 import requests
+from pathlib import Path
 from dotenv import load_dotenv
+
+TRADES_LOG = Path(__file__).parent / "trades.json"
 
 load_dotenv()
 logging.basicConfig(
@@ -116,12 +120,13 @@ def handle_pnl():
 
 def handle_signal(raw_text: str, binance_client):
     """Parse and execute a manual signal, tagged source='manual'."""
+    import threading
     from trader import parse_signal, execute_signal, log_trade, snapshot_confluence, build_confirmation
 
     # Extract Note: line before passing to signal parser
-    note_lines   = [l.strip() for l in raw_text.splitlines() if l.strip().lower().startswith("note:")]
-    notes        = note_lines[0][5:].strip() if note_lines else None
-    signal_text  = "\n".join(l for l in raw_text.splitlines() if not l.strip().lower().startswith("note:"))
+    note_lines  = [l.strip() for l in raw_text.splitlines() if l.strip().lower().startswith("note:")]
+    notes       = note_lines[0][5:].strip() if note_lines else None
+    signal_text = "\n".join(l for l in raw_text.splitlines() if not l.strip().lower().startswith("note:"))
 
     signal = parse_signal(signal_text)
     if not signal:
@@ -147,13 +152,30 @@ def handle_signal(raw_text: str, binance_client):
     # If no TPs specified, auto-calculate at fill time from avg entry price
     if not signal["tps"]:
         signal["tp_mode"]   = "auto_pct"
-        signal["tp_pcts"]   = [0.05, 0.10, 0.15]   # +5%, +10%, +15%
-        signal["tp_splits"] = [0.50, 0.25, 0.25]   # close 50%, 25%, 25%
+        signal["tp_pcts"]   = [0.05, 0.10, 0.15]
+        signal["tp_splits"] = [0.50, 0.25, 0.25]
 
-    confluence = snapshot_confluence(signal["symbol"])
-    result     = execute_signal(binance_client, signal)
-    log_trade(signal, result, confluence, source="manual", notes=notes)
+    # Execute order immediately — don't wait for confluence snapshot
+    result = execute_signal(binance_client, signal)
+    log_trade(signal, result, confluence=None, source="manual", notes=notes)
     send(build_confirmation(signal, result))
+
+    # Fetch confluence in background and update the trade log
+    def fetch_and_update():
+        try:
+            confluence = snapshot_confluence(signal["symbol"])
+            trades = json.loads(TRADES_LOG.read_text()) if TRADES_LOG.exists() else []
+            # Find the trade we just logged (last manual entry for this symbol)
+            for t in reversed(trades):
+                if t.get("source") == "manual" and t["signal"]["symbol"] == signal["symbol"] and not t.get("confluence"):
+                    t["confluence"] = confluence
+                    break
+            TRADES_LOG.write_text(json.dumps(trades, indent=2))
+            logging.info(f"Confluence snapshot saved for {signal['symbol']}")
+        except Exception as e:
+            logging.warning(f"Confluence snapshot failed: {e}")
+
+    threading.Thread(target=fetch_and_update, daemon=True).start()
 
 
 HELP = (
