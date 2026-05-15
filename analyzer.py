@@ -46,6 +46,9 @@ def format_trades_for_claude(trades: list[dict]) -> str:
         fund = sent.get("funding_rate", {})
         ls   = sent.get("long_short_ratio", {})
 
+        closed    = t.get("trade_closed", False)
+        total_pnl = t.get("total_pnl_usdt")
+
         lines.append(f"Trade {i}: {sig['symbol']} {sig['direction']}")
         lines.append(f"  Time: {res.get('timestamp', 'unknown')}")
         lines.append(f"  Entries: {sig['entries']}  SL: {sig['sl']}  TPs: {sig['tps']}")
@@ -72,6 +75,30 @@ def format_trades_for_claude(trades: list[dict]) -> str:
                 f"  Fib golden zone: {fib.get('fib_0786')} – {fib.get('fib_0618')}  "
                 f"In zone: {in_zone}"
             )
+
+        if closed and total_pnl is not None:
+            sign = "+" if total_pnl >= 0 else ""
+            lines.append(f"  OUTCOME: CLOSED  total_pnl={sign}{total_pnl:.2f} USDT  (closed {t.get('closed_at', '')[:16]})")
+            for order in res.get("placed_orders", []):
+                if not order.get("filled_qty"):
+                    continue
+                for idx, tp in enumerate(order.get("tp_orders", []), start=1):
+                    if tp.get("status") == "FILLED":
+                        s = "+" if tp.get("pnl_usdt", 0) >= 0 else ""
+                        lines.append(
+                            f"    TP{idx} hit @ ${tp.get('avg_fill_price', 0):,.4f}: "
+                            f"{s}{tp.get('pnl_usdt', 0):.2f} USDT ({s}{tp.get('pnl_pct', 0):.2f}%)"
+                        )
+                sl = order.get("sl_order", {})
+                if sl.get("status") == "FILLED":
+                    s = "+" if sl.get("pnl_usdt", 0) >= 0 else ""
+                    lines.append(
+                        f"    SL hit @ ${sl.get('avg_fill_price', 0):,.4f}: "
+                        f"{s}{sl.get('pnl_usdt', 0):.2f} USDT ({s}{sl.get('pnl_pct', 0):.2f}%)"
+                    )
+        else:
+            lines.append(f"  OUTCOME: {'OPEN/ACTIVE' if any(o.get('filled_qty') for o in res.get('placed_orders', [])) else 'PENDING'}")
+
         lines.append("")
 
     return "\n".join(lines)
@@ -96,9 +123,8 @@ def analyze(trades: list[dict]) -> str:
                 "type": "text",
                 "text": (
                     "You are a quantitative crypto trading analyst. You analyze trade logs "
-                    "and identify patterns between market conditions and trade setups. "
-                    "Be concise, specific, and actionable. Use numbers where possible. "
-                    "Note: P&L data is not available yet — focus on entry confluence quality."
+                    "and identify patterns between market conditions, trade setups, and outcomes. "
+                    "Be concise, specific, and actionable. Use numbers where possible."
                 ),
                 "cache_control": {"type": "ephemeral"},
             }
@@ -108,11 +134,11 @@ def analyze(trades: list[dict]) -> str:
                 "role": "user",
                 "content": (
                     f"Analyze these {len(trades)} trades and provide:\n"
-                    "1. Most common confluence conditions at entry (RSI range, Fear&Greed range, funding bias)\n"
-                    "2. Most traded symbols and any patterns there\n"
-                    "3. Quality of setups — were entries in strong confluence zones?\n"
-                    "4. Any red flags or weak setups to watch for\n"
-                    "5. One sentence recommendation for what conditions to prioritize\n\n"
+                    "1. Win rate and total realized P&L for CLOSED trades (ignore OPEN/PENDING)\n"
+                    "2. Confluence conditions at entry for winning vs. losing trades — what differs?\n"
+                    "3. Best and worst trades — what market conditions surrounded them?\n"
+                    "4. P&L breakdown by symbol — which symbols performed best/worst?\n"
+                    "5. One sentence recommendation on which confluence conditions correlate with wins\n\n"
                     f"Trade data:\n{trades_text}"
                 ),
             }

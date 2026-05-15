@@ -43,12 +43,19 @@ def send_telegram(msg: str):
         print(f"Telegram failed: {e}")
 
 
-def is_running(script: str) -> bool:
+def process_count(script: str) -> int:
     result = subprocess.run(
-        ["pgrep", "-f", f"python.*{script}"],
-        capture_output=True,
+        ["pgrep", "-fc", f"python.*{script}"],
+        capture_output=True, text=True,
     )
-    return result.returncode == 0
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return 0
+
+
+def is_running(script: str) -> bool:
+    return process_count(script) > 0
 
 
 def load_trades() -> list[dict]:
@@ -119,19 +126,36 @@ def categorize_trades(trades: list[dict]) -> tuple[list, list]:
     return pending, active
 
 
-def build_message(pending: list, active: list) -> str:
-    trader_ok = is_running("trader.py")
-    fill_ok   = is_running("fill_monitor.py")
-    dash_ok   = is_running("dashboard.py")
+def recent_pnl_line(trades: list[dict], days: int = 7) -> str:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    closed = [
+        t for t in trades
+        if t.get("trade_closed") and t.get("total_pnl_usdt") is not None
+        and datetime.fromisoformat(t["closed_at"]) > cutoff
+    ]
+    if not closed:
+        return ""
+    pnls  = [t["total_pnl_usdt"] for t in closed]
+    wins  = sum(1 for p in pnls if p > 0)
+    total = sum(pnls)
+    sign  = "+" if total >= 0 else ""
+    return f"\n💰 *Last {days}d P&L:* `{sign}{total:.2f} USDT` — {wins}/{len(closed)} wins"
 
-    t = "✅" if trader_ok else "❌"
-    f = "✅" if fill_ok   else "❌"
-    d = "✅" if dash_ok   else "❌"
+
+def build_message(pending: list, active: list) -> str:
+    trader_n = process_count("trader.py")
+    fill_n   = process_count("fill_monitor.py")
+    dash_n   = process_count("dashboard.py")
+
+    def status(n: int) -> str:
+        if n == 0:   return "❌"
+        if n == 1:   return "✅"
+        return f"⚠️x{n}"
 
     lines = [
         "🌅 *TradingLuna* — 6:30 AM",
         "",
-        f"{t} trader  {f} fill monitor  {d} dashboard",
+        f"{status(trader_n)} trader  {status(fill_n)} fill monitor  {status(dash_n)} dashboard",
     ]
 
     if not pending and not active:
@@ -152,9 +176,18 @@ def build_message(pending: list, active: list) -> str:
                 note      = "  TP hit, runner open" if a["tp_hit"] else ""
                 lines.append(f"  {a['symbol']} {a['direction']} @ {entry_str}{note}")
 
-    if not trader_ok or not fill_ok:
+    warnings = []
+    if trader_n == 0 or fill_n == 0:
+        warnings.append("Process down — check the server!")
+    if trader_n > 1:
+        warnings.append(f"Duplicate trader sessions ({trader_n}) — kill extras!")
+    if fill_n > 1:
+        warnings.append(f"Duplicate fill_monitor sessions ({fill_n}) — kill extras!")
+
+    if warnings:
         lines.append("")
-        lines.append("⚠️ *Process down — check the server!*")
+        for w in warnings:
+            lines.append(f"⚠️ *{w}*")
 
     return "\n".join(lines)
 
@@ -163,6 +196,7 @@ def main():
     trades          = load_trades()
     pending, active = categorize_trades(trades)
     msg             = build_message(pending, active)
+    msg            += recent_pnl_line(trades)
     print(msg)
     send_telegram(msg)
 

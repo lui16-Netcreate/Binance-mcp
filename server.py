@@ -3,11 +3,16 @@ MCP server — registered in Claude Desktop / Claude Code.
 Tools:
   - TradingView alert signals (stored by webhook.py)
   - Live Binance market data (no API key needed)
+  - P&L summary and closed trade history (from trades.json)
 """
 import json
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from db import init_db, get_signals, clear_signals
 import binance_data as binance
+
+TRADES_LOG = Path(__file__).parent / "trades.json"
 
 init_db()
 mcp = FastMCP("TradingView Signals")
@@ -181,6 +186,72 @@ def get_market_sentiment(symbol: str = "BTCUSDT") -> str:
         return json.dumps(data, indent=2)
     except Exception as e:
         return f"Error fetching sentiment: {e}"
+
+
+# ── P&L tools ────────────────────────────────────────────────────────────────
+
+def _load_trades() -> list[dict]:
+    if not TRADES_LOG.exists():
+        return []
+    return json.loads(TRADES_LOG.read_text())
+
+
+@mcp.tool()
+def get_pnl_summary(days: int = 30) -> str:
+    """
+    Return a P&L summary for closed trades in the last N days.
+    Includes: total realized P&L, win rate, avg win/loss, best/worst trade.
+    """
+    trades = _load_trades()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    closed = [
+        t for t in trades
+        if t.get("trade_closed") and t.get("total_pnl_usdt") is not None
+        and datetime.fromisoformat(t["closed_at"]) > cutoff
+    ]
+    if not closed:
+        return f"No closed trades in the last {days} days."
+
+    pnls   = [t["total_pnl_usdt"] for t in closed]
+    wins   = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    total  = sum(pnls)
+    sign   = "+" if total >= 0 else ""
+
+    lines = [
+        f"P&L Summary — last {days} days ({len(closed)} closed trades)",
+        f"  Total realized P&L : {sign}{total:.2f} USDT",
+        f"  Win rate           : {len(wins)}/{len(closed)} ({len(wins)/len(closed)*100:.1f}%)",
+        f"  Avg win            : +{sum(wins)/len(wins):.2f} USDT" if wins else "  Avg win            : —",
+        f"  Avg loss           : {sum(losses)/len(losses):.2f} USDT" if losses else "  Avg loss           : —",
+        f"  Best trade         : +{max(pnls):.2f} USDT",
+        f"  Worst trade        : {min(pnls):.2f} USDT",
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_closed_trades(limit: int = 10) -> str:
+    """Return the most recently closed trades with their realized P&L."""
+    trades = _load_trades()
+    closed = [t for t in trades if t.get("trade_closed") and t.get("total_pnl_usdt") is not None]
+    closed.sort(key=lambda t: t.get("closed_at", ""), reverse=True)
+    closed = closed[:limit]
+    if not closed:
+        return "No closed trades found."
+
+    rows = []
+    for t in closed:
+        pnl  = t["total_pnl_usdt"]
+        sign = "+" if pnl >= 0 else ""
+        rows.append({
+            "symbol":     t["signal"]["symbol"],
+            "direction":  t["signal"]["direction"],
+            "closed_at":  t.get("closed_at", "")[:16],
+            "pnl_usdt":   f"{sign}{pnl:.2f}",
+            "outcome":    "WIN" if pnl > 0 else "LOSS",
+        })
+    return json.dumps(rows, indent=2)
 
 
 if __name__ == "__main__":

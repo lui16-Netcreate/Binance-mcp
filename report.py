@@ -31,6 +31,24 @@ def send_telegram(msg: str):
     )
 
 
+def _pnl_stats(trades: list[dict]) -> dict:
+    closed = [t for t in trades if t.get("trade_closed") and t.get("total_pnl_usdt") is not None]
+    if not closed:
+        return {}
+    pnls  = [t["total_pnl_usdt"] for t in closed]
+    wins  = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    return {
+        "n":          len(closed),
+        "total":      round(sum(pnls), 2),
+        "win_rate":   round(len(wins) / len(pnls) * 100, 1),
+        "avg_win":    round(sum(wins) / len(wins), 2) if wins else 0,
+        "avg_loss":   round(sum(losses) / len(losses), 2) if losses else 0,
+        "best":       round(max(pnls), 2),
+        "worst":      round(min(pnls), 2),
+    }
+
+
 def build_report(trades: list[dict], days: int, analysis: str) -> str:
     now = datetime.now(timezone.utc)
 
@@ -62,6 +80,20 @@ def build_report(trades: list[dict], days: int, analysis: str) -> str:
     avg_rsi = round(sum(rsis) / len(rsis), 1) if rsis else "N/A"
     avg_fg  = round(sum(fgs) / len(fgs), 1) if fgs else "N/A"
 
+    # P&L section
+    pnl = _pnl_stats(trades)
+    if pnl:
+        sign = "+" if pnl["total"] >= 0 else ""
+        pnl_block = (
+            f"*Realized P&L ({pnl['n']} closed trades):*\n"
+            f"  Total: `{sign}{pnl['total']:.2f} USDT`\n"
+            f"  Win rate: `{pnl['win_rate']}%`\n"
+            f"  Avg win: `+{pnl['avg_win']:.2f} USDT`  |  Avg loss: `{pnl['avg_loss']:.2f} USDT`\n"
+            f"  Best: `+{pnl['best']:.2f}`  |  Worst: `{pnl['worst']:.2f}`\n\n"
+        )
+    else:
+        pnl_block = "*Realized P&L:* No closed trades yet.\n\n"
+
     report = (
         f"📊 *Trading Report — Last {days} Days*\n"
         f"_{now.strftime('%b %d, %Y  %H:%M UTC')}_\n\n"
@@ -69,6 +101,7 @@ def build_report(trades: list[dict], days: int, analysis: str) -> str:
         f"  • LONG: {longs}\n"
         f"  • SHORT skipped: {shorts}\n"
         f"  • With errors: {errors}\n\n"
+        f"{pnl_block}"
         f"*Top symbols:*\n  {symbols_str}\n\n"
         f"*Avg confluence at entry:*\n"
         f"  RSI(14): `{avg_rsi}`\n"
