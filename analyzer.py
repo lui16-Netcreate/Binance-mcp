@@ -48,8 +48,9 @@ def format_trades_for_claude(trades: list[dict]) -> str:
 
         closed    = t.get("trade_closed", False)
         total_pnl = t.get("total_pnl_usdt")
+        source    = t.get("source", "telegram")
 
-        lines.append(f"Trade {i}: {sig['symbol']} {sig['direction']}")
+        lines.append(f"Trade {i}: {sig['symbol']} {sig['direction']} [{source}]")
         lines.append(f"  Time: {res.get('timestamp', 'unknown')}")
         lines.append(f"  Entries: {sig['entries']}  SL: {sig['sl']}  TPs: {sig['tps']}")
         lines.append(f"  Orders placed: {len(res['placed_orders'])}  Errors: {res.get('errors', [])}")
@@ -134,7 +135,7 @@ def analyze(trades: list[dict]) -> str:
                 "role": "user",
                 "content": (
                     f"Analyze these {len(trades)} trades and provide:\n"
-                    "1. Win rate and total realized P&L for CLOSED trades (ignore OPEN/PENDING)\n"
+                    "1. Win rate and total realized P&L for CLOSED trades, split by source [telegram] vs [manual]\n"
                     "2. Confluence conditions at entry for winning vs. losing trades — what differs?\n"
                     "3. Best and worst trades — what market conditions surrounded them?\n"
                     "4. P&L breakdown by symbol — which symbols performed best/worst?\n"

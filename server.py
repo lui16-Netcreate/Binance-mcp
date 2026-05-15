@@ -197,9 +197,10 @@ def _load_trades() -> list[dict]:
 
 
 @mcp.tool()
-def get_pnl_summary(days: int = 30) -> str:
+def get_pnl_summary(days: int = 30, source: str = None) -> str:
     """
     Return a P&L summary for closed trades in the last N days.
+    Optionally filter by source: 'telegram' (auto-trades) or 'manual' (your own signals).
     Includes: total realized P&L, win rate, avg win/loss, best/worst trade.
     """
     trades = _load_trades()
@@ -208,9 +209,11 @@ def get_pnl_summary(days: int = 30) -> str:
         t for t in trades
         if t.get("trade_closed") and t.get("total_pnl_usdt") is not None
         and datetime.fromisoformat(t["closed_at"]) > cutoff
+        and (source is None or t.get("source", "telegram") == source)
     ]
+    label = f"{source} signals" if source else "all signals"
     if not closed:
-        return f"No closed trades in the last {days} days."
+        return f"No closed trades in the last {days} days ({label})."
 
     pnls   = [t["total_pnl_usdt"] for t in closed]
     wins   = [p for p in pnls if p > 0]
@@ -219,7 +222,7 @@ def get_pnl_summary(days: int = 30) -> str:
     sign   = "+" if total >= 0 else ""
 
     lines = [
-        f"P&L Summary — last {days} days ({len(closed)} closed trades)",
+        f"P&L Summary — last {days} days, {label} ({len(closed)} closed trades)",
         f"  Total realized P&L : {sign}{total:.2f} USDT",
         f"  Win rate           : {len(wins)}/{len(closed)} ({len(wins)/len(closed)*100:.1f}%)",
         f"  Avg win            : +{sum(wins)/len(wins):.2f} USDT" if wins else "  Avg win            : —",
@@ -231,25 +234,34 @@ def get_pnl_summary(days: int = 30) -> str:
 
 
 @mcp.tool()
-def get_closed_trades(limit: int = 10) -> str:
-    """Return the most recently closed trades with their realized P&L."""
+def get_closed_trades(limit: int = 10, source: str = None) -> str:
+    """
+    Return the most recently closed trades with their realized P&L.
+    Optionally filter by source: 'telegram' (auto-trades) or 'manual' (your own signals).
+    """
     trades = _load_trades()
-    closed = [t for t in trades if t.get("trade_closed") and t.get("total_pnl_usdt") is not None]
+    closed = [
+        t for t in trades
+        if t.get("trade_closed") and t.get("total_pnl_usdt") is not None
+        and (source is None or t.get("source", "telegram") == source)
+    ]
     closed.sort(key=lambda t: t.get("closed_at", ""), reverse=True)
     closed = closed[:limit]
     if not closed:
-        return "No closed trades found."
+        label = f" ({source})" if source else ""
+        return f"No closed trades found{label}."
 
     rows = []
     for t in closed:
         pnl  = t["total_pnl_usdt"]
         sign = "+" if pnl >= 0 else ""
         rows.append({
-            "symbol":     t["signal"]["symbol"],
-            "direction":  t["signal"]["direction"],
-            "closed_at":  t.get("closed_at", "")[:16],
-            "pnl_usdt":   f"{sign}{pnl:.2f}",
-            "outcome":    "WIN" if pnl > 0 else "LOSS",
+            "symbol":    t["signal"]["symbol"],
+            "direction": t["signal"]["direction"],
+            "source":    t.get("source", "telegram"),
+            "closed_at": t.get("closed_at", "")[:16],
+            "pnl_usdt":  f"{sign}{pnl:.2f}",
+            "outcome":   "WIN" if pnl > 0 else "LOSS",
         })
     return json.dumps(rows, indent=2)
 

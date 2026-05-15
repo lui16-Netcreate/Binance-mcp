@@ -262,9 +262,9 @@ def snapshot_confluence(symbol: str) -> dict:
 
 # ── Trade log ─────────────────────────────────────────────────────────────────
 
-def log_trade(signal: dict, result: dict, confluence: dict = None):
+def log_trade(signal: dict, result: dict, confluence: dict = None, source: str = "telegram"):
     trades = json.loads(TRADES_LOG.read_text()) if TRADES_LOG.exists() else []
-    entry = {"signal": signal, "result": result}
+    entry = {"signal": signal, "result": result, "source": source}
     if confluence:
         entry["confluence"] = confluence
     trades.append(entry)

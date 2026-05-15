@@ -31,22 +31,38 @@ def send_telegram(msg: str):
     )
 
 
-def _pnl_stats(trades: list[dict]) -> dict:
-    closed = [t for t in trades if t.get("trade_closed") and t.get("total_pnl_usdt") is not None]
+def _pnl_stats(trades: list[dict], source: str = None) -> dict:
+    closed = [
+        t for t in trades
+        if t.get("trade_closed") and t.get("total_pnl_usdt") is not None
+        and (source is None or t.get("source", "telegram") == source)
+    ]
     if not closed:
         return {}
-    pnls  = [t["total_pnl_usdt"] for t in closed]
-    wins  = [p for p in pnls if p > 0]
+    pnls   = [t["total_pnl_usdt"] for t in closed]
+    wins   = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
     return {
-        "n":          len(closed),
-        "total":      round(sum(pnls), 2),
-        "win_rate":   round(len(wins) / len(pnls) * 100, 1),
-        "avg_win":    round(sum(wins) / len(wins), 2) if wins else 0,
-        "avg_loss":   round(sum(losses) / len(losses), 2) if losses else 0,
-        "best":       round(max(pnls), 2),
-        "worst":      round(min(pnls), 2),
+        "n":        len(closed),
+        "total":    round(sum(pnls), 2),
+        "win_rate": round(len(wins) / len(pnls) * 100, 1),
+        "avg_win":  round(sum(wins) / len(wins), 2) if wins else 0,
+        "avg_loss": round(sum(losses) / len(losses), 2) if losses else 0,
+        "best":     round(max(pnls), 2),
+        "worst":    round(min(pnls), 2),
     }
+
+
+def _pnl_block(stats: dict, label: str) -> str:
+    if not stats:
+        return f"*{label}:* No closed trades yet.\n"
+    sign = "+" if stats["total"] >= 0 else ""
+    return (
+        f"*{label} ({stats['n']} closed):*\n"
+        f"  Total: `{sign}{stats['total']:.2f} USDT`  |  Win rate: `{stats['win_rate']}%`\n"
+        f"  Avg win: `+{stats['avg_win']:.2f}`  |  Avg loss: `{stats['avg_loss']:.2f}`\n"
+        f"  Best: `+{stats['best']:.2f}`  |  Worst: `{stats['worst']:.2f}`\n"
+    )
 
 
 def build_report(trades: list[dict], days: int, analysis: str) -> str:
@@ -80,19 +96,10 @@ def build_report(trades: list[dict], days: int, analysis: str) -> str:
     avg_rsi = round(sum(rsis) / len(rsis), 1) if rsis else "N/A"
     avg_fg  = round(sum(fgs) / len(fgs), 1) if fgs else "N/A"
 
-    # P&L section
-    pnl = _pnl_stats(trades)
-    if pnl:
-        sign = "+" if pnl["total"] >= 0 else ""
-        pnl_block = (
-            f"*Realized P&L ({pnl['n']} closed trades):*\n"
-            f"  Total: `{sign}{pnl['total']:.2f} USDT`\n"
-            f"  Win rate: `{pnl['win_rate']}%`\n"
-            f"  Avg win: `+{pnl['avg_win']:.2f} USDT`  |  Avg loss: `{pnl['avg_loss']:.2f} USDT`\n"
-            f"  Best: `+{pnl['best']:.2f}`  |  Worst: `{pnl['worst']:.2f}`\n\n"
-        )
-    else:
-        pnl_block = "*Realized P&L:* No closed trades yet.\n\n"
+    # P&L section — split by source
+    tg_block     = _pnl_block(_pnl_stats(trades, source="telegram"), "🤖 Telegram signals")
+    manual_block = _pnl_block(_pnl_stats(trades, source="manual"),   "✍️ Your signals")
+    pnl_block    = tg_block + manual_block + "\n"
 
     report = (
         f"📊 *Trading Report — Last {days} Days*\n"
