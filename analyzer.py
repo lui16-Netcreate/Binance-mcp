@@ -58,9 +58,17 @@ def format_trades_for_claude(trades: list[dict]) -> str:
         if ind:
             lines.append(
                 f"  RSI(14): {ind.get('rsi_14')}  "
-                f"SMA20: {ind.get('sma_20')}  SMA50: {ind.get('sma_50')}  "
-                f"Volume spike: {ind.get('volume_spike')}x"
+                f"EMA20: {ind.get('ema_20')}  EMA50: {ind.get('ema_50')}  EMA200: {ind.get('ema_200')}  "
+                f"SMA20: {ind.get('sma_20')}  SMA50: {ind.get('sma_50')}"
             )
+            lines.append(
+                f"  Volume (current): {ind.get('volume_current')}  "
+                f"Avg: {ind.get('volume_avg')}  Spike: {ind.get('volume_spike')}x  "
+                f"24h total: {ind.get('volume_total_24h')}"
+            )
+        vol_24h = conf.get("volume_24h_usdt")
+        if vol_24h:
+            lines.append(f"  24h volume (exchange): ${vol_24h:,.0f} USDT")
         if fg:
             lines.append(f"  Fear&Greed: {fg.get('value')} — {fg.get('classification')}")
         if fund:
@@ -76,6 +84,10 @@ def format_trades_for_claude(trades: list[dict]) -> str:
                 f"  Fib golden zone: {fib.get('fib_0786')} – {fib.get('fib_0618')}  "
                 f"In zone: {in_zone}"
             )
+
+        notes = t.get("notes")
+        if notes:
+            lines.append(f"  My reasoning: \"{notes}\"")
 
         if closed and total_pnl is not None:
             sign = "+" if total_pnl >= 0 else ""
@@ -136,10 +148,11 @@ def analyze(trades: list[dict]) -> str:
                 "content": (
                     f"Analyze these {len(trades)} trades and provide:\n"
                     "1. Win rate and total realized P&L for CLOSED trades, split by source [telegram] vs [manual]\n"
-                    "2. Confluence conditions at entry for winning vs. losing trades — what differs?\n"
-                    "3. Best and worst trades — what market conditions surrounded them?\n"
-                    "4. P&L breakdown by symbol — which symbols performed best/worst?\n"
-                    "5. One sentence recommendation on which confluence conditions correlate with wins\n\n"
+                    "2. Confluence conditions at entry for winning vs. losing trades — RSI, EMA positioning, volume spike, what differs?\n"
+                    "3. For [manual] trades with 'My reasoning' notes — do those reasons correlate with wins or losses?\n"
+                    "4. Best and worst trades — what market conditions surrounded them?\n"
+                    "5. P&L breakdown by symbol — which symbols performed best/worst?\n"
+                    "6. One sentence recommendation on which conditions (including stated reasoning) correlate with wins\n\n"
                     f"Trade data:\n{trades_text}"
                 ),
             }

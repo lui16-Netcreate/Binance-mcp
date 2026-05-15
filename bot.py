@@ -118,27 +118,35 @@ def handle_signal(raw_text: str, binance_client):
     """Parse and execute a manual signal, tagged source='manual'."""
     from trader import parse_signal, execute_signal, log_trade, snapshot_confluence, build_confirmation
 
-    signal = parse_signal(raw_text)
+    # Extract Note: line before passing to signal parser
+    note_lines   = [l.strip() for l in raw_text.splitlines() if l.strip().lower().startswith("note:")]
+    notes        = note_lines[0][5:].strip() if note_lines else None
+    signal_text  = "\n".join(l for l in raw_text.splitlines() if not l.strip().lower().startswith("note:"))
+
+    signal = parse_signal(signal_text)
     if not signal:
         send(
             "❌ Could not parse signal. Use this format:\n\n"
             "`$BTC LONG 95000 - 94000`\n"
             "`TP1: 96500 TP2: 97000 TP3: 97500`\n"
-            "`SL: 93500`"
+            "`SL: 93500`\n"
+            "`Note: EMA 200 bounce, high volume`"
         )
         return
 
+    note_line = f"\n📝 Note: _{notes}_" if notes else ""
     send(
         f"📨 *Parsed signal:* {signal['symbol']} {signal['direction']}\n"
         f"Entries: {signal['entries']}\n"
         f"TPs: {signal['tps']}\n"
-        f"SL: {signal['sl']}\n\n"
+        f"SL: {signal['sl']}"
+        f"{note_line}\n\n"
         "⏳ Executing..."
     )
 
     confluence = snapshot_confluence(signal["symbol"])
     result     = execute_signal(binance_client, signal)
-    log_trade(signal, result, confluence, source="manual")
+    log_trade(signal, result, confluence, source="manual", notes=notes)
     send(build_confirmation(signal, result))
 
 

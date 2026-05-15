@@ -59,7 +59,7 @@ def send_notification(title: str, message: str):
 
 
 def check_confluence(symbol: str, interval: str) -> dict | None:
-    candles   = binance.get_candles(symbol, interval, limit=100)
+    candles   = binance.get_candles(symbol, interval, limit=250)
     indicators = binance.compute_indicators(candles)
     fib        = binance.compute_fibonacci(candles)
 

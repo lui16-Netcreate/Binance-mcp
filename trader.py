@@ -248,11 +248,16 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
 def snapshot_confluence(symbol: str) -> dict:
     snapshot = {"symbol": symbol, "timestamp": datetime.now(timezone.utc).isoformat()}
     try:
-        candles = binance_data.get_candles(symbol, "1h", 100)
+        candles = binance_data.get_candles(symbol, "1h", 250)  # 250 needed for EMA200
         snapshot["indicators"] = binance_data.compute_indicators(candles)
         snapshot["fibonacci"]  = binance_data.compute_fibonacci(candles)
     except Exception as e:
         snapshot["indicators_error"] = str(e)
+    try:
+        stats = binance_data.get_24hr_stats(symbol)
+        snapshot["volume_24h_usdt"] = round(float(stats["quoteVolume"]), 2)
+    except Exception as e:
+        snapshot["volume_24h_error"] = str(e)
     try:
         snapshot["sentiment"] = binance_data.get_full_sentiment(symbol)
     except Exception as e:
@@ -262,11 +267,13 @@ def snapshot_confluence(symbol: str) -> dict:
 
 # ── Trade log ─────────────────────────────────────────────────────────────────
 
-def log_trade(signal: dict, result: dict, confluence: dict = None, source: str = "telegram"):
+def log_trade(signal: dict, result: dict, confluence: dict = None, source: str = "telegram", notes: str = None):
     trades = json.loads(TRADES_LOG.read_text()) if TRADES_LOG.exists() else []
     entry = {"signal": signal, "result": result, "source": source}
     if confluence:
         entry["confluence"] = confluence
+    if notes:
+        entry["notes"] = notes
     trades.append(entry)
     TRADES_LOG.write_text(json.dumps(trades, indent=2))
 

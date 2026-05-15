@@ -59,6 +59,16 @@ def _sma(closes: list[float], period: int) -> float | None:
     return sum(closes[-period:]) / period
 
 
+def _ema(closes: list[float], period: int) -> float | None:
+    if len(closes) < period:
+        return None
+    k   = 2 / (period + 1)
+    ema = sum(closes[:period]) / period  # seed with SMA of first N candles
+    for price in closes[period:]:
+        ema = price * k + ema * (1 - k)
+    return round(ema, 4)
+
+
 def _rsi(closes: list[float], period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None
@@ -219,17 +229,21 @@ def get_full_sentiment(symbol: str = "BTCUSDT") -> dict:
 
 
 def compute_indicators(candles: list[dict]) -> dict:
-    closes = [c["close"] for c in candles]
+    closes  = [c["close"] for c in candles]
     volumes = [c["volume"] for c in candles]
     avg_volume = sum(volumes[:-1]) / max(len(volumes) - 1, 1)
     return {
-        "rsi_14": _rsi(closes, 14),
-        "sma_20": round(_sma(closes, 20), 4) if _sma(closes, 20) else None,
-        "sma_50": round(_sma(closes, 50), 4) if _sma(closes, 50) else None,
+        "rsi_14":        _rsi(closes, 14),
+        "sma_20":        round(_sma(closes, 20), 4) if _sma(closes, 20) else None,
+        "sma_50":        round(_sma(closes, 50), 4) if _sma(closes, 50) else None,
+        "ema_20":        _ema(closes, 20),
+        "ema_50":        _ema(closes, 50),
+        "ema_200":       _ema(closes, 200),
         "current_price": closes[-1],
-        "high_24h": max(c["high"] for c in candles[-24:]),
-        "low_24h": min(c["low"] for c in candles[-24:]),
-        "volume_current": volumes[-1],
-        "volume_avg": round(avg_volume, 2),
-        "volume_spike": round(volumes[-1] / avg_volume, 2) if avg_volume > 0 else None,
+        "high_24h":      max(c["high"] for c in candles[-24:]),
+        "low_24h":       min(c["low"] for c in candles[-24:]),
+        "volume_current":  round(volumes[-1], 2),
+        "volume_avg":      round(avg_volume, 2),
+        "volume_spike":    round(volumes[-1] / avg_volume, 2) if avg_volume > 0 else None,
+        "volume_total_24h": round(sum(volumes[-24:]), 2),
     }
