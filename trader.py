@@ -246,9 +246,9 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
 # ── Confluence snapshot ───────────────────────────────────────────────────────
 
 def snapshot_confluence(symbol: str) -> dict:
-    snapshot = {"symbol": symbol, "timestamp": datetime.now(timezone.utc).isoformat()}
+    snapshot = {"symbol": symbol, "interval": "4h", "timestamp": datetime.now(timezone.utc).isoformat()}
     try:
-        candles = binance_data.get_candles(symbol, "1h", 250)  # 250 needed for EMA200
+        candles = binance_data.get_candles(symbol, "4h", 250)  # 250 needed for EMA200
         snapshot["indicators"] = binance_data.compute_indicators(candles)
         snapshot["fibonacci"]  = binance_data.compute_fibonacci(candles)
     except Exception as e:
