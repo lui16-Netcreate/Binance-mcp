@@ -292,25 +292,31 @@ def check_fills(client: BinanceClient | None):
 
 # ── Exit fill monitor (TP + SL) with P&L tracking ────────────────────────────
 
-def _exit_remaining_on_tp1(client: BinanceClient | None, symbol: str, entry: dict, sym_info: dict):
-    """Cancel TP2+, cancel SL, then market-sell whatever qty remains after TP1."""
-    if entry.get("exit_all_order"):
-        return  # already done
+def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, signal: dict, sym_info: dict):
+    """TP1 hit: cancel all remaining TPs + old SL, re-place TP2 for full remaining qty,
+    place new SL at TP1 price (breakeven protection). Acts as an OCO pair."""
+    if entry.get("sl_trailed"):
+        return
 
     lot_step  = _get_filter(sym_info, "LOT_SIZE", "stepSize")
+    tick_size = _get_filter(sym_info, "PRICE_FILTER", "tickSize")
     tp_orders = entry.get("tp_orders", [])
     sl_order  = entry.get("sl_order", {})
 
-    # Cancel TP2, TP3, TP4
+    total_filled = entry.get("filled_qty", 0)
+    tp1_qty      = tp_orders[0].get("filled_qty", tp_orders[0].get("qty", 0)) if tp_orders else 0
+    remaining    = _round_to(max(total_filled - tp1_qty, 0), lot_step)
+
+    if remaining <= 0:
+        entry["sl_trailed"] = True
+        return
+
+    # Cancel all remaining TP orders (TP2, TP3, TP4) — we'll re-place TP2 with full remaining qty
     for i, tp in enumerate(tp_orders[1:], start=2):
         if tp.get("status") in ("FILLED", "CANCELED"):
             continue
         oid = tp.get("orderId")
-        if not oid or str(oid) in ("DRY_RUN", "", "None"):
-            tp["status"] = "CANCELED"
-            tp["pnl_notified"] = True
-            continue
-        if client:
+        if oid and str(oid) not in ("DRY_RUN", "", "None") and client:
             try:
                 client.cancel_order(symbol=symbol, orderId=oid)
                 logging.info(f"❌ Cancelled TP{i} {oid} ({symbol})")
@@ -319,54 +325,82 @@ def _exit_remaining_on_tp1(client: BinanceClient | None, symbol: str, entry: dic
         tp["status"] = "CANCELED"
         tp["pnl_notified"] = True
 
-    # Cancel SL
+    # Cancel old SL
     sl_oid = sl_order.get("orderId")
-    if sl_oid and str(sl_oid) not in ("DRY_RUN", "", "None") and not sl_order.get("status"):
-        if client:
+    if sl_oid and str(sl_oid) not in ("DRY_RUN", "", "None") and not sl_order.get("status") and client:
+        try:
+            client.cancel_order(symbol=symbol, orderId=sl_oid)
+            logging.info(f"❌ Cancelled old SL {sl_oid} ({symbol})")
+        except BinanceAPIException as e:
+            logging.warning(f"Could not cancel SL {sl_oid}: {e.message}")
+
+    # Determine TP2 price (original signal TP2, or auto_pct calculation)
+    tp2_price = tp_orders[1].get("price") if len(tp_orders) >= 2 else None
+    if not tp2_price and signal.get("tp_mode") == "auto_pct":
+        pcts     = signal.get("tp_pcts", [0.05, 0.10])
+        avg_fill = entry.get("avg_fill_price", 0)
+        if len(pcts) >= 2 and avg_fill:
+            tp2_price = round(avg_fill * (1 + pcts[1]), 8)
+
+    # Place new TP2 limit sell for the FULL remaining qty
+    tp2_rounded   = _round_to(tp2_price, tick_size) if tp2_price else 0
+    tp2_order_id  = None
+    if tp2_rounded > 0:
+        if DRY_RUN or not client:
+            tp2_order_id = "DRY_RUN"
+            logging.info(f"[DRY-RUN] SELL limit  {remaining} {symbol} @ {tp2_rounded}  (revised TP2)")
+        else:
             try:
-                client.cancel_order(symbol=symbol, orderId=sl_oid)
-                logging.info(f"❌ Cancelled SL {sl_oid} ({symbol})")
+                order = client.order_limit_sell(
+                    symbol=symbol, quantity=remaining,
+                    price=str(tp2_rounded), timeInForce="GTC",
+                )
+                tp2_order_id = order["orderId"]
+                logging.info(f"🎯 Revised TP2: {remaining} {symbol} @ {tp2_rounded}  (id={tp2_order_id})")
             except BinanceAPIException as e:
-                logging.warning(f"Could not cancel SL {sl_oid}: {e.message}")
-        sl_order["status"] = "CANCELED"
-        sl_order["pnl_notified"] = True
+                logging.error(f"Revised TP2 failed: {e.message}")
 
-    # Market-sell the remaining qty
-    total_filled = entry.get("filled_qty", 0)
-    tp1_qty      = tp_orders[0].get("filled_qty", tp_orders[0].get("qty", 0)) if tp_orders else 0
-    remaining    = _round_to(max(total_filled - tp1_qty, 0), lot_step)
+        new_tp2 = {"price": tp2_rounded, "qty": remaining, "orderId": tp2_order_id,
+                   "type": "TP", "pnl_notified": False}
+        if len(tp_orders) >= 2:
+            tp_orders[1].update(new_tp2)
+        else:
+            tp_orders.append(new_tp2)
 
-    if remaining <= 0:
-        return
+    # Place new SL at TP1 price (breakeven)
+    tp1_price = tp_orders[0].get("price", 0) if tp_orders else 0
+    sl_stop   = _round_to(tp1_price, tick_size)
+    sl_limit  = _round_to(tp1_price * (1 - SL_SLIP), tick_size)
+    sl_oid_new = None
 
-    entry_price = entry.get("avg_fill_price", 0)
+    if DRY_RUN or not client:
+        sl_oid_new = "DRY_RUN"
+        logging.info(f"[DRY-RUN] STOP_LOSS_LIMIT  {remaining} {symbol} stop={sl_stop} limit={sl_limit}  (trail SL)")
+    else:
+        try:
+            order = client.create_order(
+                symbol=symbol, side="SELL", type="STOP_LOSS_LIMIT",
+                quantity=remaining, price=str(sl_limit), stopPrice=str(sl_stop),
+                timeInForce="GTC",
+            )
+            sl_oid_new = order["orderId"]
+            logging.info(f"🛡️ Trail SL: {remaining} {symbol} stop={sl_stop} limit={sl_limit}  (id={sl_oid_new})")
+        except BinanceAPIException as e:
+            logging.error(f"Trail SL failed: {e.message}")
 
-    if DRY_RUN or client is None:
-        logging.info(f"[DRY-RUN] MARKET SELL  {remaining} {symbol}  (TP1 → exit all)")
-        entry["exit_all_order"] = {"qty": remaining, "orderId": "DRY_RUN", "pnl_usdt": 0.0, "pnl_pct": 0.0}
-        return
+    sl_order.update({
+        "stopPrice": sl_stop, "price": sl_limit,
+        "qty": remaining, "orderId": sl_oid_new,
+        "status": None, "pnl_notified": False,
+    })
 
-    try:
-        order       = client.order_market_sell(symbol=symbol, quantity=remaining)
-        avg_price, fill_qty = _avg_fill_price_from_status(order, entry_price)
-        pnl_usdt, pnl_pct   = _calc_pnl(entry_price, avg_price, fill_qty)
-        sign = "+" if pnl_usdt >= 0 else ""
-        entry["exit_all_order"] = {
-            "qty":            fill_qty,
-            "avg_fill_price": round(avg_price, 8),
-            "orderId":        order["orderId"],
-            "pnl_usdt":       pnl_usdt,
-            "pnl_pct":        pnl_pct,
-        }
-        logging.info(f"🏁 {symbol} TP1→EXIT ALL: sold {fill_qty} @ {avg_price:.4f}  {sign}{pnl_usdt:.2f} USDT")
-        send_telegram(
-            f"🏁 *{symbol} — full exit on TP1*\n"
-            f"Remaining `{fill_qty}` sold @ `${avg_price:,.4f}`\n"
-            f"P&L on remainder: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
-        )
-    except BinanceAPIException as e:
-        logging.error(f"Market exit failed ({symbol}): {e.message}")
-        send_telegram(f"⚠️ *{symbol}* TP1 exit-all market sell failed:\n`{e.message}`")
+    entry["sl_trailed"] = True
+
+    send_telegram(
+        f"🛡️ *{symbol} TP1 hit — SL moved to breakeven*\n"
+        f"SL at TP1 price: `${sl_stop:,.4f}`\n"
+        f"Remaining `{remaining}` rides to TP2 @ `${tp2_rounded:,.4f}`"
+    )
 
 
 def _cancel_open_entries(client: BinanceClient | None, trade: dict, symbol: str, orders: list):
@@ -408,19 +442,15 @@ def _check_trade_closed(trade: dict):
     all_closed = True
 
     for entry in filled_entries:
-        sl       = entry.get("sl_order", {})
-        tps      = entry.get("tp_orders", [])
-        exit_all = entry.get("exit_all_order")
+        sl  = entry.get("sl_order", {})
+        tps = entry.get("tp_orders", [])
 
         if sl.get("status") == "FILLED":
             total_pnl += sl.get("pnl_usdt", 0)
             continue  # entry fully resolved via SL
 
-        total_pnl += sum(tp.get("pnl_usdt", 0) for tp in tps if tp.get("status") == "FILLED")
-        if exit_all:
-            total_pnl += exit_all.get("pnl_usdt", 0)
-            # TP1 filled + remainder sold at market; TP2+ are CANCELED — entry is done
-        elif tps:
+        if tps:
+            total_pnl += sum(tp.get("pnl_usdt", 0) for tp in tps if tp.get("status") == "FILLED")
             if not all(tp.get("status") in ("FILLED", "CANCELED") for tp in tps):
                 all_closed = False
         else:
@@ -500,11 +530,24 @@ def check_exit_fills(client: BinanceClient | None):
                 )
                 logging.info(f"🎯 {symbol} TP{idx}: {sign}{pnl_usdt:.2f} USDT ({sign}{pnl_pct:.2f}%)")
 
-                # TP1 hit → cancel TP2+, cancel SL, market-sell the rest
+                # TP1 hit → trail SL to breakeven, re-place TP2 for full remaining qty
                 if idx == 1:
                     if sym_info is None and client:
                         sym_info = client.get_symbol_info(symbol)
-                    _exit_remaining_on_tp1(client, symbol, entry, sym_info or {})
+                    _trail_sl_to_tp1(client, symbol, entry, signal, sym_info or {})
+
+                # TP2+ hit while SL was trailed → cancel the trail SL (OCO)
+                elif idx >= 2 and entry.get("sl_trailed"):
+                    sl = entry.get("sl_order", {})
+                    sl_oid = sl.get("orderId")
+                    if sl_oid and str(sl_oid) not in ("DRY_RUN", "", "None") and not sl.get("status") and client:
+                        try:
+                            client.cancel_order(symbol=symbol, orderId=sl_oid)
+                            sl["status"] = "CANCELED"
+                            sl["pnl_notified"] = True
+                            logging.info(f"❌ Cancelled trail SL {sl_oid} (TP{idx} filled)")
+                        except BinanceAPIException as e:
+                            logging.warning(f"Could not cancel trail SL {sl_oid}: {e.message}")
 
             # ── Check SL order ────────────────────────────────────────────────
             sl = entry.get("sl_order", {})
@@ -531,13 +574,29 @@ def check_exit_fills(client: BinanceClient | None):
                     changed = True
 
                     sign = "+" if pnl_usdt >= 0 else ""
+                    label = "Trail SL hit (breakeven)" if entry.get("sl_trailed") else "SL hit"
                     send_telegram(
-                        f"🛑 *{symbol} SL hit*\n"
+                        f"🛑 *{symbol} {label}*\n"
                         f"Sold `{fill_qty}` @ `${avg_price:,.4f}`\n"
                         f"Entry: `${entry_price:,.4f}`\n"
                         f"P&L: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
                     )
                     logging.info(f"🛑 {symbol} SL: {sign}{pnl_usdt:.2f} USDT ({sign}{pnl_pct:.2f}%)")
+
+                    # Trail SL filled → cancel the revised TP2 (OCO)
+                    if entry.get("sl_trailed") and client:
+                        for i, tp in enumerate(entry.get("tp_orders", [])[1:], start=2):
+                            if tp.get("status") in ("FILLED", "CANCELED"):
+                                continue
+                            oid = tp.get("orderId")
+                            if oid and str(oid) not in ("DRY_RUN", "", "None"):
+                                try:
+                                    client.cancel_order(symbol=symbol, orderId=oid)
+                                    tp["status"] = "CANCELED"
+                                    tp["pnl_notified"] = True
+                                    logging.info(f"❌ Cancelled TP{i} {oid} (trail SL filled)")
+                                except BinanceAPIException as e:
+                                    logging.warning(f"Could not cancel TP{i} {oid}: {e.message}")
 
         # Cancel unfilled entries on first TP hit (only once)
         if any_new_tp_hit and not trade.get("entries_cancelled"):
