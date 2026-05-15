@@ -17,6 +17,7 @@
       --blue:    #58a6ff;
       --yellow:  #d29922;
       --purple:  #a371f7;
+      --orange:  #e3b341;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -52,12 +53,22 @@
       50%       { opacity: 0.3; }
     }
 
+    /* ── Section label ── */
+    .section-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      margin-top: 20px;
+    }
+
     /* ── Cards ── */
     .cards {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 12px;
-      margin-bottom: 24px;
+      margin-bottom: 12px;
     }
     .card {
       background: var(--card);
@@ -72,6 +83,40 @@
     .card .value.blue   { color: var(--blue); }
     .card .value.yellow { color: var(--yellow); }
     .card .value.purple { color: var(--purple); }
+
+    /* ── P&L comparison card ── */
+    .pnl-compare {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 600px) { .pnl-compare { grid-template-columns: 1fr; } }
+    .pnl-side .pnl-title {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .pnl-side .pnl-title.telegram { color: var(--blue); }
+    .pnl-side .pnl-title.manual   { color: var(--purple); }
+    .pnl-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .pnl-row .pnl-key  { color: var(--muted); }
+    .pnl-row .pnl-val  { font-weight: 600; }
+    .pnl-row .pnl-val.green  { color: var(--green); }
+    .pnl-row .pnl-val.red    { color: var(--red); }
+    .pnl-row .pnl-val.blue   { color: var(--blue); }
+    .pnl-row .pnl-val.purple { color: var(--purple); }
 
     /* ── Charts row ── */
     .charts {
@@ -118,6 +163,7 @@
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: rgba(255,255,255,.03); }
 
+    /* ── Badges ── */
     .badge {
       display: inline-block;
       padding: 2px 8px;
@@ -125,14 +171,36 @@
       font-size: 11px;
       font-weight: 600;
     }
-    .badge.long  { background: rgba(63,185,80,.2);  color: var(--green); }
-    .badge.short { background: rgba(248,81,73,.2);  color: var(--red); }
+    .badge.long     { background: rgba(63,185,80,.2);   color: var(--green); }
+    .badge.short    { background: rgba(248,81,73,.2);   color: var(--red); }
+    .badge.telegram { background: rgba(88,166,255,.15); color: var(--blue); }
+    .badge.manual   { background: rgba(163,113,247,.15);color: var(--purple); }
 
-    .price-up   { color: var(--green); }
-    .price-down { color: var(--red); }
+    /* ── Filter tabs ── */
+    .filter-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .filter-tab {
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      transition: all .15s;
+    }
+    .filter-tab:hover  { border-color: var(--blue); color: var(--text); }
+    .filter-tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+
+    .price-up      { color: var(--green); }
+    .price-down    { color: var(--red); }
     .price-neutral { color: var(--muted); }
 
-    .tps { color: var(--muted); font-size: 11px; line-height: 1.6; }
+    .tps     { color: var(--muted); font-size: 11px; line-height: 1.6; }
     .entries { font-size: 12px; line-height: 1.6; }
 
     #empty {
@@ -149,6 +217,8 @@
   <div id="last-updated">Loading...</div>
 </header>
 
+<!-- Activity summary cards -->
+<div class="section-label">Activity</div>
 <div class="cards">
   <div class="card">
     <div class="label">Total Signals</div>
@@ -176,6 +246,23 @@
   </div>
 </div>
 
+<!-- P&L comparison -->
+<div class="section-label">Realized P&L — by Source</div>
+<div class="pnl-compare">
+  <div class="pnl-side" id="pnl-telegram">
+    <div class="pnl-title telegram">🤖 Telegram Signals</div>
+    <div class="pnl-row"><span class="pnl-key">Closed trades</span><span class="pnl-val" id="tg-n">—</span></div>
+    <div class="pnl-row"><span class="pnl-key">Total P&L</span><span class="pnl-val" id="tg-total">—</span></div>
+    <div class="pnl-row"><span class="pnl-key">Win rate</span><span class="pnl-val blue" id="tg-winrate">—</span></div>
+  </div>
+  <div class="pnl-side" id="pnl-manual">
+    <div class="pnl-title manual">✍️ Your Signals</div>
+    <div class="pnl-row"><span class="pnl-key">Closed trades</span><span class="pnl-val" id="manual-n">—</span></div>
+    <div class="pnl-row"><span class="pnl-key">Total P&L</span><span class="pnl-val" id="manual-total">—</span></div>
+    <div class="pnl-row"><span class="pnl-key">Win rate</span><span class="pnl-val purple" id="manual-winrate">—</span></div>
+  </div>
+</div>
+
 <div class="charts">
   <div class="chart-card">
     <h3>Top Symbols</h3>
@@ -189,20 +276,28 @@
 
 <div class="table-card">
   <h3>Trade History</h3>
+
+  <div class="filter-tabs">
+    <button class="filter-tab active" onclick="setFilter('all', this)">All</button>
+    <button class="filter-tab" onclick="setFilter('telegram', this)">🤖 Telegram</button>
+    <button class="filter-tab" onclick="setFilter('manual', this)">✍️ My Signals</button>
+  </div>
+
   <div id="empty" style="display:none">No trades logged yet. Waiting for first signal...</div>
   <table id="trades-table">
     <thead>
       <tr>
         <th>Time</th>
         <th>Symbol</th>
+        <th>Source</th>
         <th>Dir</th>
         <th>Entries</th>
         <th>TPs</th>
         <th>SL</th>
         <th>RSI</th>
         <th>F&G</th>
-        <th>Current Price</th>
-        <th>Orders</th>
+        <th>Price</th>
+        <th>P&L</th>
       </tr>
     </thead>
     <tbody id="trades-body"></tbody>
@@ -210,8 +305,10 @@
 </div>
 
 <script>
-  let symbolChart = null;
-  let rsiChart    = null;
+  let symbolChart  = null;
+  let rsiChart     = null;
+  let currentFilter = "all";
+  let allTrades     = [];
 
   function fmt(n, decimals = 4) {
     if (n == null) return "—";
@@ -221,6 +318,19 @@
   function timeAgo(iso) {
     const d = new Date(iso);
     return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" });
+  }
+
+  function setFilter(filter, btn) {
+    currentFilter = filter;
+    document.querySelectorAll(".filter-tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    renderTrades();
+  }
+
+  function pnlDisplay(value) {
+    if (value == null) return { text: "—", cls: "" };
+    const sign = value >= 0 ? "+" : "";
+    return { text: sign + value.toFixed(2) + " USDT", cls: value >= 0 ? "price-up" : "price-down" };
   }
 
   async function loadSummary() {
@@ -233,6 +343,22 @@
     document.getElementById("c-rsi").textContent    = d.avg_rsi ?? "—";
     document.getElementById("c-fg").textContent     = d.avg_fg != null ? d.avg_fg + "/100" : "—";
     document.getElementById("c-errors").textContent = d.errors ?? "—";
+
+    // P&L by source
+    const pnl = d.pnl || {};
+
+    function fillPnl(src, nId, totalId, winId) {
+      const s = pnl[src] || {};
+      document.getElementById(nId).textContent    = s.n != null ? s.n : "—";
+      const tp = pnlDisplay(s.n > 0 ? s.total : null);
+      const totalEl = document.getElementById(totalId);
+      totalEl.textContent  = tp.text;
+      totalEl.className    = "pnl-val " + (s.total >= 0 ? "green" : "red");
+      document.getElementById(winId).textContent  = s.n > 0 ? s.win_rate + "%" : "—";
+    }
+
+    fillPnl("telegram", "tg-n",     "tg-total",     "tg-winrate");
+    fillPnl("manual",   "manual-n", "manual-total", "manual-winrate");
 
     // Symbols chart
     const symLabels = d.symbols.map(s => s[0].replace("USDT", ""));
@@ -281,7 +407,15 @@
 
   async function loadTrades() {
     const r = await fetch("/api/trades");
-    const trades = await r.json();
+    allTrades = await r.json();
+    renderTrades();
+  }
+
+  function renderTrades() {
+    const trades = currentFilter === "all"
+      ? allTrades
+      : allTrades.filter(t => (t.source || "telegram") === currentFilter);
+
     const tbody = document.getElementById("trades-body");
     tbody.innerHTML = "";
 
@@ -295,32 +429,45 @@
     document.getElementById("trades-table").style.display = "table";
 
     trades.forEach(t => {
-      const sig    = t.signal;
-      const res    = t.result;
-      const conf   = t.confluence || {};
-      const ind    = conf.indicators || {};
-      const sent   = conf.sentiment || {};
-      const fg     = sent.fear_greed || {};
+      const sig      = t.signal;
+      const res      = t.result;
+      const conf     = t.confluence || {};
+      const ind      = conf.indicators || {};
+      const sent     = conf.sentiment || {};
+      const fg       = sent.fear_greed || {};
       const curPrice = t.current_price;
       const avgEntry = sig.entries.reduce((a,b) => a+b, 0) / sig.entries.length;
 
+      // Source badge
+      const src      = t.source || "telegram";
+      const srcLabel = src === "manual" ? "✍️ Manual" : "🤖 Auto";
+      const srcBadge = `<span class="badge ${src}">${srcLabel}</span>`;
+
+      // Current price
       let priceClass = "price-neutral";
-      let priceStr = curPrice ? fmt(curPrice) : "—";
+      let priceStr   = curPrice ? fmt(curPrice) : "—";
       if (curPrice && sig.direction === "LONG") {
         priceClass = curPrice >= avgEntry ? "price-up" : "price-down";
       }
 
-      const tpLines = Object.entries(sig.tps).map(([k,v]) =>
-        `<div>${k.toUpperCase()}: ${fmt(v, 4)}</div>`
-      ).join("");
+      // P&L
+      let pnlStr = "—", pnlClass = "price-neutral";
+      if (t.trade_closed && t.total_pnl_usdt != null) {
+        const p = pnlDisplay(t.total_pnl_usdt);
+        pnlStr  = p.text;
+        pnlClass = p.cls;
+      } else if (res.placed_orders.some(o => o.filled_qty)) {
+        pnlStr = "Open";
+      }
 
+      const tpLines    = Object.entries(sig.tps).map(([k,v]) => `<div>${k.toUpperCase()}: ${fmt(v, 4)}</div>`).join("");
       const entryLines = sig.entries.map(e => `<div>${fmt(e, 4)}</div>`).join("");
-      const orders = res.placed_orders.length;
 
       const row = document.createElement("tr");
       row.innerHTML = `
         <td style="color:var(--muted);white-space:nowrap">${timeAgo(res.timestamp)}</td>
         <td><strong>${sig.symbol.replace("USDT","")}</strong><div style="color:var(--muted);font-size:11px">USDT</div></td>
+        <td>${srcBadge}</td>
         <td><span class="badge ${sig.direction.toLowerCase()}">${sig.direction}</span></td>
         <td class="entries">${entryLines}</td>
         <td class="tps">${tpLines}</td>
@@ -328,7 +475,7 @@
         <td style="color:var(--yellow)">${ind.rsi_14 ?? "—"}</td>
         <td style="color:var(--purple)">${fg.value != null ? fg.value + "<br><span style='font-size:10px;color:var(--muted)'>" + fg.classification + "</span>" : "—"}</td>
         <td class="${priceClass}">${priceStr}</td>
-        <td style="color:var(--muted)">${orders} placed</td>
+        <td class="${pnlClass}" style="white-space:nowrap;font-weight:600">${pnlStr}</td>
       `;
       tbody.appendChild(row);
     });

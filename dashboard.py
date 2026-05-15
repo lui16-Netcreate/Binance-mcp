@@ -68,12 +68,30 @@ async def api_trades(_: None = Depends(require_auth)):
     return JSONResponse(list(reversed(trades)))
 
 
+def _pnl_stats(trades: list, source: str = None) -> dict:
+    closed = [
+        t for t in trades
+        if t.get("trade_closed") and t.get("total_pnl_usdt") is not None
+        and (source is None or t.get("source", "telegram") == source)
+    ]
+    if not closed:
+        return {"n": 0, "total": 0, "win_rate": 0}
+    pnls = [t["total_pnl_usdt"] for t in closed]
+    wins = sum(1 for p in pnls if p > 0)
+    return {
+        "n":        len(closed),
+        "total":    round(sum(pnls), 2),
+        "win_rate": round(wins / len(pnls) * 100, 1),
+    }
+
+
 @app.get("/api/summary")
 async def api_summary(_: None = Depends(require_auth)):
     if not TRADES_LOG.exists():
         return JSONResponse({"total": 0, "longs": 0, "shorts": 0, "errors": 0,
                              "symbols": [], "avg_rsi": None, "avg_fg": None,
-                             "rsi_values": [], "fg_values": []})
+                             "rsi_values": [], "fg_values": [],
+                             "pnl": {"all": {}, "telegram": {}, "manual": {}}})
 
     trades = json.loads(TRADES_LOG.read_text())
 
@@ -107,6 +125,11 @@ async def api_summary(_: None = Depends(require_auth)):
         "avg_fg":     round(sum(fgs) / len(fgs), 1) if fgs else None,
         "rsi_values": rsis,
         "fg_values":  fgs,
+        "pnl": {
+            "all":      _pnl_stats(trades),
+            "telegram": _pnl_stats(trades, "telegram"),
+            "manual":   _pnl_stats(trades, "manual"),
+        },
     })
 
 
