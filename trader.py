@@ -300,6 +300,14 @@ def build_confirmation(signal: dict, result: dict) -> str:
             f"TP{k[-1]}: `${v:,.2f}`" for k, v in sorted(tps.items())
         )
         msg += f"🎯 TPs:\n{tp_str}\n"
+    elif signal.get("tp_mode") == "auto_pct":
+        pcts   = signal.get("tp_pcts",   [0.05, 0.10, 0.15])
+        splits = signal.get("tp_splits", [0.50, 0.25, 0.25])
+        tp_lines = "\n  ".join(
+            f"TP{i+1}: `+{p*100:.0f}%` — close `{s*100:.0f}%` of position"
+            for i, (p, s) in enumerate(zip(pcts, splits))
+        )
+        msg += f"🎯 TPs (auto at fill):\n  {tp_lines}\n"
 
     msg += f"🛑 SL: `${sl:,.2f}`\n"
     order_size = float(os.getenv("ORDER_SIZE_USD", str(result['usdt_balance'] * 0.01)))

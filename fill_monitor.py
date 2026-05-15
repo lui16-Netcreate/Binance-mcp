@@ -108,6 +108,7 @@ def place_tp_sl(
     sl: float,
     sym_info: dict,
     avg_fill_price: float = 0.0,
+    tp_splits: list = None,
 ) -> dict:
     lot_step  = _get_filter(sym_info, "LOT_SIZE", "stepSize")
     tick_size = _get_filter(sym_info, "PRICE_FILTER", "tickSize")
@@ -115,10 +116,12 @@ def place_tp_sl(
     tp_prices = [tps.get(f"tp{i}") for i in range(1, 5)]
     tp_prices = [p for p in tp_prices if p]  # drop missing TPs
 
+    splits = tp_splits if tp_splits is not None else TP_SPLIT
+
     # Distribute qty across TPs; last TP gets remainder to avoid rounding loss
     tp_qtys = []
     remaining = filled_qty
-    for idx, split in enumerate(TP_SPLIT[:len(tp_prices)]):
+    for idx, split in enumerate(splits[:len(tp_prices)]):
         if idx == len(tp_prices) - 1:
             qty = _round_to(remaining, lot_step)
         else:
@@ -260,8 +263,20 @@ def check_fills(client: BinanceClient | None):
 
             logging.info(f"✅ Fill detected: {filled_qty} {symbol} @ {avg_price:.4f}")
 
+            # Auto-calculate TP prices from avg fill price if tp_mode is auto_pct
+            tps       = signal["tps"]
+            tp_splits = None
+            if signal.get("tp_mode") == "auto_pct" and avg_price > 0:
+                pcts      = signal.get("tp_pcts",   [0.05, 0.10, 0.15])
+                tp_splits = signal.get("tp_splits", [0.50, 0.25, 0.25])
+                tps = {f"tp{i+1}": round(avg_price * (1 + p), 8) for i, p in enumerate(pcts)}
+                logging.info(
+                    f"📐 Auto TPs from {avg_price:.4f}: "
+                    + "  ".join(f"TP{i+1}=${v:,.4f} (+{pcts[i]*100:.0f}%)" for i, v in enumerate(tps.values()))
+                )
+
             sym_info = None if (DRY_RUN or client is None) else client.get_symbol_info(symbol)
-            tp_sl    = place_tp_sl(client, symbol, filled_qty, signal["tps"], signal["sl"], sym_info or {}, avg_fill_price=avg_price)
+            tp_sl    = place_tp_sl(client, symbol, filled_qty, tps, signal["sl"], sym_info or {}, avg_fill_price=avg_price, tp_splits=tp_splits)
 
             order["tp_orders"]   = tp_sl["tp_orders"]
             order["sl_order"]    = tp_sl["sl_order"]

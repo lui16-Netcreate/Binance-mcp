@@ -144,6 +144,12 @@ def handle_signal(raw_text: str, binance_client):
         "⏳ Executing..."
     )
 
+    # If no TPs specified, auto-calculate at fill time from avg entry price
+    if not signal["tps"]:
+        signal["tp_mode"]   = "auto_pct"
+        signal["tp_pcts"]   = [0.05, 0.10, 0.15]   # +5%, +10%, +15%
+        signal["tp_splits"] = [0.50, 0.25, 0.25]   # close 50%, 25%, 25%
+
     confluence = snapshot_confluence(signal["symbol"])
     result     = execute_signal(binance_client, signal)
     log_trade(signal, result, confluence, source="manual", notes=notes)
