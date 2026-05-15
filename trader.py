@@ -339,7 +339,7 @@ async def main():
         if not b_key or not b_secret:
             logging.error("Set BINANCE_API_KEY and BINANCE_API_SECRET in .env")
             return
-        binance_client = BinanceClient(b_key, b_secret, tld="us")
+        binance_client = BinanceClient(b_key, b_secret, tld="us", requests_params={"timeout": 15})
         try:
             binance_client.ping()
             logging.info("Binance US connected ✓")

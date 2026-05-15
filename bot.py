@@ -156,7 +156,12 @@ def handle_signal(raw_text: str, binance_client):
         signal["tp_splits"] = [0.50, 0.25, 0.25]
 
     # Execute order immediately — don't wait for confluence snapshot
-    result = execute_signal(binance_client, signal)
+    try:
+        result = execute_signal(binance_client, signal)
+    except Exception as e:
+        logging.error(f"execute_signal failed: {e}")
+        send(f"❌ *Order failed:* `{e}`")
+        return
     log_trade(signal, result, confluence=None, source="manual", notes=notes)
     send(build_confirmation(signal, result))
 
@@ -204,7 +209,7 @@ def main():
     if b_key and b_secret:
         try:
             from binance.client import Client as BinanceClient
-            binance_client = BinanceClient(b_key, b_secret, tld="us")
+            binance_client = BinanceClient(b_key, b_secret, tld="us", requests_params={"timeout": 15})
             binance_client.ping()
             logging.info("Binance US connected ✓")
         except Exception as e:
