@@ -127,6 +127,11 @@ def _round_to(value: float, step: str) -> float:
     return float((Decimal(str(value)) // step_dec) * step_dec)
 
 
+def _fmt(value) -> str:
+    """Format a number for Binance API as plain decimal — avoids scientific notation."""
+    return format(Decimal(str(value)), 'f')
+
+
 def _get_filter(sym_info: dict, filter_type: str, field: str) -> str:
     for f in sym_info.get("filters", []):
         if f["filterType"] == filter_type:
@@ -238,8 +243,8 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
             try:
                 order = client.order_limit_buy(
                     symbol=symbol,
-                    quantity=qty,
-                    price=str(price),
+                    quantity=_fmt(qty),
+                    price=_fmt(price),
                     timeInForce="GTC",
                 )
                 placed.append({"price": price, "qty": qty, "orderId": order["orderId"]})

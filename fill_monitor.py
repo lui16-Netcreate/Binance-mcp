@@ -65,6 +65,11 @@ def _round_to(value: float, step: str) -> float:
     return float((Decimal(str(value)) // step_dec) * step_dec)
 
 
+def _fmt(value) -> str:
+    """Format a number for Binance API as plain decimal — avoids scientific notation (e.g. 7e-05)."""
+    return format(Decimal(str(value)), 'f')
+
+
 def _calc_pnl(entry_price: float, exit_price: float, qty: float) -> tuple[float, float]:
     """Returns (pnl_usdt, pnl_pct) for a LONG spot trade."""
     pnl_usdt = (exit_price - entry_price) * qty
@@ -142,31 +147,35 @@ def place_tp_sl(
         try:
             order = client.order_limit_sell(
                 symbol=symbol,
-                quantity=qty,
-                price=str(price),
+                quantity=_fmt(qty),
+                price=_fmt(price),
                 timeInForce="GTC",
             )
             tp_orders.append({"price": price, "qty": qty, "orderId": order["orderId"], "type": "TP"})
-            logging.info(f"🎯 TP sell  {qty} {symbol} @ {price}  (id={order['orderId']})")
+            logging.info(f"🎯 TP sell  {qty:.8f} {symbol} @ {price}  (id={order['orderId']})")
         except BinanceAPIException as e:
             logging.error(f"TP order failed @ {tp_price}: {e.message}")
             tp_orders.append({"price": price, "qty": qty, "orderId": None, "error": e.message})
 
-    # SL stop-limit sell — based on max dollar loss (SL_LOSS_PCT of order value)
+    # SL stop-limit sell — use whichever SL is closer to market (protects against
+    # PERCENT_PRICE_BY_SIDE rejection when loss-based SL is too far from current price)
     if avg_fill_price > 0:
         order_size    = float(os.getenv("ORDER_SIZE_USD", "11"))
         loss_per_unit = (order_size * SL_LOSS_PCT) / filled_qty if filled_qty > 0 else 0
-        sl_price      = avg_fill_price - loss_per_unit
+        loss_based_sl = avg_fill_price - loss_per_unit
+        sl_price      = max(sl, loss_based_sl)  # higher = closer to market for a LONG
     else:
-        sl_price = sl  # fallback to signal's SL price
+        sl_price = sl
     sl_stop  = _round_to(sl_price, tick_size)
     sl_limit = _round_to(sl_price * (1 - SL_SLIP), tick_size)
     sl_qty   = _round_to(filled_qty, lot_step)
     sl_order = {}
 
+    logging.info(f"{symbol} SL — signal_sl={sl}  loss_based={avg_fill_price - (float(os.getenv('ORDER_SIZE_USD','11')) * SL_LOSS_PCT / filled_qty) if filled_qty else '?'}  using={sl_price}")
+
     if sl_qty > 0:
         if DRY_RUN:
-            logging.info(f"[DRY-RUN] STOP_LOSS_LIMIT  {sl_qty} {symbol} stop={sl_stop} limit={sl_limit}")
+            logging.info(f"[DRY-RUN] STOP_LOSS_LIMIT  {sl_qty:.8f} {symbol} stop={sl_stop} limit={sl_limit}")
             sl_order = {"stopPrice": sl_stop, "price": sl_limit, "qty": sl_qty, "orderId": "DRY_RUN"}
         else:
             try:
@@ -174,9 +183,9 @@ def place_tp_sl(
                     symbol=symbol,
                     side="SELL",
                     type="STOP_LOSS_LIMIT",
-                    quantity=sl_qty,
-                    price=str(sl_limit),
-                    stopPrice=str(sl_stop),
+                    quantity=_fmt(sl_qty),
+                    price=_fmt(sl_limit),
+                    stopPrice=_fmt(sl_stop),
                     timeInForce="GTC",
                 )
                 sl_order = {
@@ -370,8 +379,8 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
         else:
             try:
                 order = client.order_limit_sell(
-                    symbol=symbol, quantity=remaining,
-                    price=str(tp2_rounded), timeInForce="GTC",
+                    symbol=symbol, quantity=_fmt(remaining),
+                    price=_fmt(tp2_rounded), timeInForce="GTC",
                 )
                 tp2_order_id = order["orderId"]
                 logging.info(f"🎯 Revised TP2: {remaining} {symbol} @ {tp2_rounded}  (id={tp2_order_id})")
@@ -398,11 +407,11 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
         try:
             order = client.create_order(
                 symbol=symbol, side="SELL", type="STOP_LOSS_LIMIT",
-                quantity=remaining, price=str(sl_limit), stopPrice=str(sl_stop),
+                quantity=_fmt(remaining), price=_fmt(sl_limit), stopPrice=_fmt(sl_stop),
                 timeInForce="GTC",
             )
             sl_oid_new = order["orderId"]
-            logging.info(f"🛡️ Trail SL: {remaining} {symbol} stop={sl_stop} limit={sl_limit}  (id={sl_oid_new})")
+            logging.info(f"🛡️ Trail SL: {remaining:.8f} {symbol} stop={sl_stop} limit={sl_limit}  (id={sl_oid_new})")
         except BinanceAPIException as e:
             logging.error(f"Trail SL failed: {e.message}")
 
