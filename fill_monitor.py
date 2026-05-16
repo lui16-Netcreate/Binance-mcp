@@ -36,9 +36,9 @@ logging.basicConfig(
 DRY_RUN       = "--dry-run" in sys.argv
 TRADES_LOG    = Path(__file__).parent / "trades.json"
 POLL_INTERVAL = 60   # seconds between polls
-SL_SLIP       = 0.003  # 0.3% below SL price for the limit leg (ensures fill)
-TP_SPLIT      = [0.40, 0.30, 0.20, 0.10]
-SL_LOSS_PCT   = float(os.getenv("SL_LOSS_PCT", "0.50"))  # max loss per order as fraction of order value
+SL_SLIP     = 0.003  # 0.3% below SL price for the limit leg (ensures fill)
+TP_SPLIT    = [0.40, 0.30, 0.20, 0.10]
+SL_LOSS_PCT = float(os.getenv("SL_LOSS_PCT", "0.50"))  # max loss per order as fraction of order value
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -152,14 +152,13 @@ def place_tp_sl(
             logging.error(f"TP order failed @ {tp_price}: {e.message}")
             tp_orders.append({"price": price, "qty": qty, "orderId": None, "error": e.message})
 
-    # SL stop-limit sell — use fill-price-based SL (SL_LOSS_PCT of order value)
-    # SL_LOSS_PCT=0.50 means stop out when position is 50% of ORDER_SIZE_USD in loss
+    # SL stop-limit sell — based on max dollar loss (SL_LOSS_PCT of order value)
     if avg_fill_price > 0:
-        order_size = float(os.getenv("ORDER_SIZE_USD", "11"))
+        order_size    = float(os.getenv("ORDER_SIZE_USD", "11"))
         loss_per_unit = (order_size * SL_LOSS_PCT) / filled_qty if filled_qty > 0 else 0
-        sl_price = avg_fill_price - loss_per_unit
+        sl_price      = avg_fill_price - loss_per_unit
     else:
-        sl_price = sl  # fallback to signal's SL if no fill price available
+        sl_price = sl  # fallback to signal's SL price
     sl_stop  = _round_to(sl_price, tick_size)
     sl_limit = _round_to(sl_price * (1 - SL_SLIP), tick_size)
     sl_qty   = _round_to(filled_qty, lot_step)
@@ -198,11 +197,12 @@ def build_fill_notification(signal: dict, order: dict, tp_sl: dict) -> str:
     sym    = signal["symbol"]
     prefix = "🔵 *[DRY RUN]* " if DRY_RUN else "✅ "
     msg    = f"{prefix}*{sym} entry filled!*\n\n"
-    msg   += f"📥 Filled: `{order.get('filled_qty', order['qty'])}` @ `${order.get('avg_fill_price', order['price']):,.4f}`\n\n"
+    filled_qty = order.get('filled_qty', order['qty'])
+    msg   += f"📥 Filled: `{filled_qty:.8f}` @ `${order.get('avg_fill_price', order['price']):,.4f}`\n\n"
 
     if tp_sl.get("tp_orders"):
         tp_lines = "\n".join(
-            f"  TP{i+1}: `${o['price']:,.4f}` × `{o['qty']}`"
+            f"  TP{i+1}: `${o['price']:,.4f}` × `{o['qty']:.8f}`"
             for i, o in enumerate(tp_sl["tp_orders"])
         )
         msg += f"🎯 TP sells placed:\n{tp_lines}\n\n"
