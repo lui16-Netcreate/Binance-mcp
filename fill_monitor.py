@@ -246,15 +246,32 @@ def check_fills(client: BinanceClient | None):
                 # Skip only if TP/SL orders were actually placed successfully.
                 # If all order IDs are None (placement failed), fall through and retry.
                 valid_id = lambda oid: oid and str(oid) not in ("None", "", "DRY_RUN")
-                has_tp = any(valid_id(o.get("orderId")) for o in order.get("tp_orders", []))
-                has_sl = valid_id(order.get("sl_order", {}).get("orderId"))
-                if has_tp or has_sl:
-                    continue
-                # All placements failed — reset flag and retry
+                tp_orders_stored = order.get("tp_orders", [])
+                has_any_tp = any(valid_id(o.get("orderId")) for o in tp_orders_stored)
+                has_sl     = valid_id(order.get("sl_order", {}).get("orderId"))
+                if has_any_tp and has_sl:
+                    continue  # fully protected — skip
+                # SL or TPs missing — cancel any stale orders on Binance then retry
+                if client:
+                    for tp in tp_orders_stored:
+                        oid = tp.get("orderId")
+                        if valid_id(oid):
+                            try:
+                                client.cancel_order(symbol=symbol, orderId=oid)
+                                logging.info(f"♻️  Cancelled stale TP {oid} before retry")
+                            except BinanceAPIException:
+                                pass
+                    sl_oid = order.get("sl_order", {}).get("orderId")
+                    if valid_id(sl_oid):
+                        try:
+                            client.cancel_order(symbol=symbol, orderId=sl_oid)
+                            logging.info(f"♻️  Cancelled stale SL {sl_oid} before retry")
+                        except BinanceAPIException:
+                            pass
                 order["tp_sl_placed"] = False
                 order.pop("tp_orders", None)
                 order.pop("sl_order", None)
-                logging.info(f"♻️  Retrying TP/SL for {symbol} order {order.get('orderId')} (previous placement failed)")
+                logging.info(f"♻️  Retrying TP/SL for {symbol} order {order.get('orderId')}")
             if str(order.get("orderId")) == "DRY_RUN":
                 continue
 
