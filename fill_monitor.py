@@ -157,47 +157,13 @@ def place_tp_sl(
             logging.error(f"TP order failed @ {tp_price}: {e.message}")
             tp_orders.append({"price": price, "qty": qty, "orderId": None, "error": e.message})
 
-    # SL stop-limit sell — use whichever SL is closer to market (protects against
-    # PERCENT_PRICE_BY_SIDE rejection when loss-based SL is too far from current price)
-    if avg_fill_price > 0:
-        order_size    = float(os.getenv("ORDER_SIZE_USD", "11"))
-        loss_per_unit = (order_size * SL_LOSS_PCT) / filled_qty if filled_qty > 0 else 0
-        loss_based_sl = avg_fill_price - loss_per_unit
-        sl_price      = max(sl, loss_based_sl)  # higher = closer to market for a LONG
-    else:
-        sl_price = sl
-    sl_stop  = _round_to(sl_price, tick_size)
-    sl_limit = _round_to(sl_price * (1 - SL_SLIP), tick_size)
-    sl_qty   = _round_to(filled_qty, lot_step)
-    sl_order = {}
+    # SL is handled as a software SL (check_software_sl polls price every 60s).
+    # Binance spot locks the asset per sell order, so we can't place a stop-limit
+    # when TP orders already lock the full position qty.
+    sl_price = max(sl, avg_fill_price - (float(os.getenv("ORDER_SIZE_USD", "11")) * SL_LOSS_PCT / filled_qty)) if avg_fill_price > 0 and filled_qty > 0 else sl
+    logging.info(f"{symbol} SL level: ${sl_price:,.4f} (monitored via software SL)")
 
-    logging.info(f"{symbol} SL — signal_sl={sl}  loss_based={avg_fill_price - (float(os.getenv('ORDER_SIZE_USD','11')) * SL_LOSS_PCT / filled_qty) if filled_qty else '?'}  using={sl_price}")
-
-    if sl_qty > 0:
-        if DRY_RUN:
-            logging.info(f"[DRY-RUN] STOP_LOSS_LIMIT  {sl_qty:.8f} {symbol} stop={sl_stop} limit={sl_limit}")
-            sl_order = {"stopPrice": sl_stop, "price": sl_limit, "qty": sl_qty, "orderId": "DRY_RUN"}
-        else:
-            try:
-                order = client.create_order(
-                    symbol=symbol,
-                    side="SELL",
-                    type="STOP_LOSS_LIMIT",
-                    quantity=_fmt(sl_qty),
-                    price=_fmt(sl_limit),
-                    stopPrice=_fmt(sl_stop),
-                    timeInForce="GTC",
-                )
-                sl_order = {
-                    "stopPrice": sl_stop, "price": sl_limit,
-                    "qty": sl_qty, "orderId": order["orderId"],
-                }
-                logging.info(f"🛡️  SL placed  {sl_qty} {symbol} stop={sl_stop} limit={sl_limit}  (id={order['orderId']})")
-            except BinanceAPIException as e:
-                logging.error(f"SL order failed: {e.message}")
-                sl_order = {"stopPrice": sl_stop, "price": sl_limit, "qty": sl_qty, "orderId": None, "error": e.message}
-
-    return {"tp_orders": tp_orders, "sl_order": sl_order}
+    return {"tp_orders": tp_orders, "sl_order": {"software_sl": True, "sl_price": sl_price, "orderId": "SOFTWARE_SL"}}
 
 
 # ── Confirmation message ──────────────────────────────────────────────────────
@@ -222,7 +188,9 @@ def build_fill_notification(signal: dict, order: dict, tp_sl: dict) -> str:
 
     sl = tp_sl.get("sl_order", {})
     if sl:
-        if sl.get("orderId"):
+        if sl.get("software_sl"):
+            msg += f"🛑 SL: `${sl['sl_price']:,.4f}` _(software — monitored every 60s)_\n"
+        elif sl.get("orderId"):
             msg += f"🛑 SL placed: stop=`${sl['stopPrice']:,.4f}` limit=`${sl['price']:,.4f}`\n"
         else:
             msg += f"⚠️ *SL FAILED* — `{sl.get('error', 'unknown error')}`\n"
@@ -245,7 +213,7 @@ def check_fills(client: BinanceClient | None):
             if order.get("tp_sl_placed"):
                 # Skip only if TP/SL orders were actually placed successfully.
                 # If all order IDs are None (placement failed), fall through and retry.
-                valid_id = lambda oid: oid and str(oid) not in ("None", "", "DRY_RUN")
+                valid_id = lambda oid: oid and str(oid) not in ("None", "", "DRY_RUN", "SOFTWARE_SL")
                 tp_orders_stored = order.get("tp_orders", [])
                 has_any_tp = any(valid_id(o.get("orderId")) for o in tp_orders_stored)
                 has_sl     = valid_id(order.get("sl_order", {}).get("orderId"))
@@ -656,6 +624,112 @@ def check_exit_fills(client: BinanceClient | None):
         save_trades(trades)
 
 
+def check_software_sl(client: BinanceClient | None):
+    """Software SL: poll live price; if below signal SL, cancel all open TPs and market-sell.
+    Used instead of a Binance stop-limit order because spot trading locks the asset per order,
+    making it impossible to have TP limit sells AND a stop-limit for the same qty simultaneously."""
+    trades  = load_trades()
+    changed = False
+
+    for trade in trades:
+        if trade.get("trade_closed") or trade.get("software_sl_triggered"):
+            continue
+
+        signal = trade["signal"]
+        sl     = signal.get("sl")
+        if not sl:
+            continue
+
+        result  = trade.get("result", {})
+        symbol  = signal["symbol"]
+        orders  = result.get("placed_orders", [])
+
+        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
+        if not filled_entries:
+            continue
+
+        # Fetch live price
+        try:
+            r = requests.get(
+                f"https://api.binance.us/api/v3/ticker/price",
+                params={"symbol": symbol}, timeout=5,
+            )
+            current_price = float(r.json()["price"])
+        except Exception as e:
+            logging.warning(f"Software SL: could not fetch price for {symbol}: {e}")
+            continue
+
+        if current_price > sl:
+            continue  # price still above SL — nothing to do
+
+        logging.warning(f"🛑 Software SL triggered: {symbol} price={current_price} <= SL={sl}")
+
+        # Cancel all open TP orders
+        for entry in filled_entries:
+            lot_step = None
+            sym_info = None
+            for tp in entry.get("tp_orders", []):
+                if tp.get("status") in ("FILLED", "CANCELED"):
+                    continue
+                oid = tp.get("orderId")
+                if oid and str(oid) not in ("DRY_RUN", "", "None") and client:
+                    try:
+                        client.cancel_order(symbol=symbol, orderId=oid)
+                        logging.info(f"❌ Cancelled TP {oid} (software SL)")
+                    except BinanceAPIException as e:
+                        logging.warning(f"Could not cancel TP {oid}: {e.message}")
+                tp["status"] = "CANCELED"
+                tp["pnl_notified"] = True
+
+            # Market-sell the remaining filled qty
+            remaining = entry.get("filled_qty", 0)
+            if remaining <= 0:
+                continue
+
+            if sym_info is None and client:
+                sym_info = client.get_symbol_info(symbol)
+            lot_step = _get_filter(sym_info or {}, "LOT_SIZE", "stepSize")
+            sell_qty = _round_to(remaining, lot_step)
+
+            entry_price = entry.get("avg_fill_price", 0)
+            pnl_usdt, pnl_pct = 0.0, 0.0
+
+            if DRY_RUN or not client:
+                logging.info(f"[DRY-RUN] SOFTWARE SL MARKET SELL {sell_qty:.8f} {symbol}")
+                entry["sl_order"] = {"orderId": "DRY_RUN", "status": "FILLED",
+                                     "avg_fill_price": current_price, "pnl_usdt": 0.0, "pnl_notified": True}
+            else:
+                try:
+                    order = client.order_market_sell(symbol=symbol, quantity=_fmt(sell_qty))
+                    avg_price, fill_qty = _avg_fill_price_from_status(order, current_price)
+                    pnl_usdt, pnl_pct   = _calc_pnl(entry_price, avg_price, fill_qty)
+                    sign = "+" if pnl_usdt >= 0 else ""
+                    entry["sl_order"] = {
+                        "orderId": order["orderId"], "status": "FILLED",
+                        "avg_fill_price": round(avg_price, 8), "filled_qty": fill_qty,
+                        "pnl_usdt": pnl_usdt, "pnl_pct": pnl_pct, "pnl_notified": True,
+                    }
+                    logging.info(f"🛑 Software SL sold {fill_qty:.8f} {symbol} @ {avg_price:.4f}  {sign}{pnl_usdt:.2f} USDT")
+                    send_telegram(
+                        f"🛑 *{symbol} SL hit* (software)\n"
+                        f"Price `${current_price:,.4f}` ≤ SL `${sl:,.4f}`\n"
+                        f"Sold `{fill_qty:.8f}` @ `${avg_price:,.4f}`\n"
+                        f"P&L: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
+                    )
+                except BinanceAPIException as e:
+                    logging.error(f"Software SL market sell failed: {e.message}")
+                    send_telegram(f"⚠️ *{symbol}* Software SL market sell failed:\n`{e.message}`")
+                    continue
+
+            changed = True
+
+        trade["software_sl_triggered"] = True
+        _check_trade_closed(trade)
+
+    if changed:
+        save_trades(trades)
+
+
 def main():
     b_key    = os.getenv("BINANCE_API_KEY", "")
     b_secret = os.getenv("BINANCE_API_SECRET", "")
@@ -681,6 +755,7 @@ def main():
     while True:
         try:
             check_fills(client)
+            check_software_sl(client)
             check_exit_fills(client)
         except Exception as e:
             logging.error(f"Poll error: {e}")
