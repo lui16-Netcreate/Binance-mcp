@@ -203,13 +203,20 @@ def build_fill_notification(signal: dict, order: dict, tp_sl: dict) -> str:
     if tp_sl.get("tp_orders"):
         tp_lines = "\n".join(
             f"  TP{i+1}: `${o['price']:,.4f}` × `{o['qty']:.8f}`"
+            if o.get("orderId") else
+            f"  TP{i+1}: ❌ FAILED — `{o.get('error', 'unknown error')}`"
             for i, o in enumerate(tp_sl["tp_orders"])
         )
-        msg += f"🎯 TP sells placed:\n{tp_lines}\n\n"
+        failed_tps = any(not o.get("orderId") for o in tp_sl["tp_orders"])
+        header = "⚠️ TP orders (some failed):" if failed_tps else "🎯 TP sells placed:"
+        msg += f"{header}\n{tp_lines}\n\n"
 
     sl = tp_sl.get("sl_order", {})
     if sl:
-        msg += f"🛑 SL placed: stop=`${sl['stopPrice']:,.4f}` limit=`${sl['price']:,.4f}`\n"
+        if sl.get("orderId"):
+            msg += f"🛑 SL placed: stop=`${sl['stopPrice']:,.4f}` limit=`${sl['price']:,.4f}`\n"
+        else:
+            msg += f"⚠️ *SL FAILED* — `{sl.get('error', 'unknown error')}`\n"
 
     return msg
 
