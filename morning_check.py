@@ -44,11 +44,11 @@ def send_telegram(msg: str):
 
 
 def process_count(script: str) -> int:
-    # Match only the venv Python binary — avoids double-counting the bash
-    # wrapper screen uses (its cmdline also contains "python <script>").
+    # Use ps + grep, excluding bash wrapper lines (screen starts scripts via
+    # "bash -c '... python script.py'" which also contains the script name).
     result = subprocess.run(
-        ["pgrep", "-fc", f"venv/bin/python.*{script}"],
-        capture_output=True, text=True,
+        f"ps aux | grep 'python.*{script}' | grep -v 'bash -c' | grep -v grep | wc -l",
+        shell=True, capture_output=True, text=True,
     )
     try:
         return int(result.stdout.strip())
