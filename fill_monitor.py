@@ -216,7 +216,8 @@ def check_fills(client: BinanceClient | None):
                 valid_id = lambda oid: oid and str(oid) not in ("None", "", "DRY_RUN", "SOFTWARE_SL")
                 tp_orders_stored = order.get("tp_orders", [])
                 has_any_tp = any(valid_id(o.get("orderId")) for o in tp_orders_stored)
-                has_sl     = valid_id(order.get("sl_order", {}).get("orderId"))
+                sl_info    = order.get("sl_order", {})
+                has_sl     = valid_id(sl_info.get("orderId")) or sl_info.get("software_sl") is True
                 if has_any_tp and has_sl:
                     continue  # fully protected — skip
                 # SL or TPs missing — cancel any stale orders on Binance then retry
