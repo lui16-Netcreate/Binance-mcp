@@ -12,7 +12,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # ── Stop all screen sessions ──────────────────────────────────────────────────
 echo ""
 echo "▶ Stopping services..."
-for session in trader fill_monitor bot dashboard; do
+for session in trader fill_monitor bot dashboard webhook; do
     if screen -S "$session" -X quit 2>/dev/null; then
         echo "  ✓ Stopped $session"
     else
@@ -42,6 +42,9 @@ echo "  ✓ bot started"
 
 screen -dmS dashboard   bash -c "cd $DIR && source $VENV && python dashboard.py"
 echo "  ✓ dashboard started"
+
+screen -dmS webhook     bash -c "cd $DIR && source $VENV && python webhook.py"
+echo "  ✓ webhook started"
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 echo ""

@@ -1,6 +1,6 @@
 """
 Webhook receiver — runs as a separate process.
-TradingView alerts POST JSON to http://localhost:8000/webhook
+TradingView alerts POST JSON to http://161.35.12.225/webhook
 """
 from fastapi import FastAPI, Request, HTTPException
 from db import init_db, insert_signal
@@ -27,4 +27,4 @@ async def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=80)
