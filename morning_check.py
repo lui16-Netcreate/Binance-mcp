@@ -60,6 +60,17 @@ def is_running(script: str) -> bool:
     return process_count(script) > 0
 
 
+def _fetch_price(symbol: str) -> float | None:
+    try:
+        r = requests.get(
+            "https://api.binance.us/api/v3/ticker/price",
+            params={"symbol": symbol}, timeout=5,
+        )
+        return float(r.json()["price"])
+    except Exception:
+        return None
+
+
 def load_trades() -> list[dict]:
     if not TRADES_LOG.exists():
         return []
@@ -176,7 +187,14 @@ def build_message(pending: list, active: list) -> str:
             for a in active:
                 entry_str = f"${a['avg_entry']:,.4f}" if a["avg_entry"] else "?"
                 note      = "  TP hit, runner open" if a["tp_hit"] else ""
-                lines.append(f"  {a['symbol']} {a['direction']} @ {entry_str}{note}")
+                pnl_str   = ""
+                if a["avg_entry"]:
+                    current = _fetch_price(a["symbol"])
+                    if current:
+                        pct  = (current - a["avg_entry"]) / a["avg_entry"] * 100
+                        sign = "+" if pct >= 0 else ""
+                        pnl_str = f"  `{sign}{pct:.2f}%`"
+                lines.append(f"  {a['symbol']} {a['direction']} @ {entry_str}{pnl_str}{note}")
 
     warnings = []
     if trader_n == 0 or fill_n == 0:
