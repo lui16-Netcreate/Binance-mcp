@@ -29,11 +29,7 @@ if crossover
 // ── Exit: TP or SL from entry price ──────────────────────────────────────────
 if strategy.position_size > 0
     entry_price = strategy.position_avg_price
-    strategy.exit(
-        "Exit", "Long",
-        limit = entry_price * (1 + tp_pct / 100),
-        stop  = entry_price * (1 - sl_pct / 100)
-    )
+    strategy.exit("Exit", "Long", limit=entry_price * (1 + tp_pct / 100), stop=entry_price * (1 - sl_pct / 100))
 
 // ── Mark crossover signals on chart ──────────────────────────────────────────
 plotshape(crossover, "Crossover", shape.triangleup, location.belowbar, color.green, size=size.small)
