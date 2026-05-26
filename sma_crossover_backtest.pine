@@ -1,0 +1,39 @@
+//@version=5
+strategy(
+    "SMA 21/200 Crossover — Backtest",
+    overlay=true,
+    initial_capital=10000,
+    default_qty_type=strategy.percent_of_equity,
+    default_qty_value=100,
+    commission_type=strategy.commission.percent,
+    commission_value=0.1
+)
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+tp_pct = input.float(1.0, "Take Profit %", minval=0.1, step=0.1)
+sl_pct = input.float(2.0, "Stop Loss %",   minval=0.1, step=0.1)
+
+// ── Indicators ────────────────────────────────────────────────────────────────
+sma21  = ta.sma(close, 21)
+sma200 = ta.sma(close, 200)
+
+plot(sma21,  "SMA 21",  color=color.orange, linewidth=1)
+plot(sma200, "SMA 200", color=color.blue,   linewidth=2)
+
+// ── Entry: SMA 21 crosses above SMA 200 ──────────────────────────────────────
+crossover = ta.crossover(sma21, sma200)
+
+if crossover
+    strategy.entry("Long", strategy.long)
+
+// ── Exit: TP or SL from entry price ──────────────────────────────────────────
+if strategy.position_size > 0
+    entry_price = strategy.position_avg_price
+    strategy.exit(
+        "Exit", "Long",
+        limit = entry_price * (1 + tp_pct / 100),
+        stop  = entry_price * (1 - sl_pct / 100)
+    )
+
+// ── Mark crossover signals on chart ──────────────────────────────────────────
+plotshape(crossover, "Crossover", shape.triangleup, location.belowbar, color.green, size=size.small)
