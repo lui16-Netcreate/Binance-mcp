@@ -22,6 +22,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 import requests
+import binance_data as binance
 
 load_dotenv()
 TRADES_LOG = Path(__file__).parent / "trades.json"
@@ -69,6 +70,22 @@ def _fetch_price(symbol: str) -> float | None:
         return float(r.json()["price"])
     except Exception:
         return None
+
+
+def _fetch_rsi(symbol: str, interval: str = "4h") -> float | None:
+    try:
+        candles = binance.get_candles(symbol, interval=interval, limit=50)
+        closes  = [c["close"] for c in candles]
+        return binance._rsi(closes, 14)
+    except Exception:
+        return None
+
+
+def _rsi_emoji(rsi: float) -> str:
+    if rsi <= 30:  return "🔴"
+    if rsi <= 50:  return "🟡"
+    if rsi <= 70:  return "🟢"
+    return "🟠"
 
 
 def load_trades() -> list[dict]:
@@ -194,7 +211,9 @@ def build_message(pending: list, active: list) -> str:
                         pct  = (current - a["avg_entry"]) / a["avg_entry"] * 100
                         sign = "+" if pct >= 0 else ""
                         pnl_str = f"  `{sign}{pct:.2f}%`"
-                lines.append(f"  {a['symbol']} {a['direction']} @ {entry_str}{pnl_str}{note}")
+                rsi = _fetch_rsi(a["symbol"])
+                rsi_str = f"  RSI(14) 4h: `{rsi}` {_rsi_emoji(rsi)}" if rsi is not None else ""
+                lines.append(f"  {a['symbol']} {a['direction']} @ {entry_str}{pnl_str}{rsi_str}{note}")
 
     warnings = []
     if trader_n == 0 or fill_n == 0:
