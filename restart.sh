@@ -31,20 +31,20 @@ git pull origin main
 echo ""
 echo "▶ Starting services..."
 
-screen -dmS trader      bash -c "cd $DIR && source $VENV && python trader.py"
-echo "  ✓ trader started"
+screen -dmS trader      bash -c "cd $DIR && source $VENV && while true; do python trader.py; echo '[trader] crashed or exited — restarting in 10s...'; sleep 10; done"
+echo "  ✓ trader started (auto-restart enabled)"
 
-screen -dmS fill_monitor bash -c "cd $DIR && source $VENV && python fill_monitor.py"
-echo "  ✓ fill_monitor started"
+screen -dmS fill_monitor bash -c "cd $DIR && source $VENV && while true; do python fill_monitor.py; echo '[fill_monitor] crashed or exited — restarting in 10s...'; sleep 10; done"
+echo "  ✓ fill_monitor started (auto-restart enabled)"
 
-screen -dmS bot         bash -c "cd $DIR && source $VENV && python bot.py"
-echo "  ✓ bot started"
+screen -dmS bot         bash -c "cd $DIR && source $VENV && while true; do python bot.py; echo '[bot] crashed or exited — restarting in 10s...'; sleep 10; done"
+echo "  ✓ bot started (auto-restart enabled)"
 
-screen -dmS dashboard   bash -c "cd $DIR && source $VENV && python dashboard.py"
-echo "  ✓ dashboard started"
+screen -dmS dashboard   bash -c "cd $DIR && source $VENV && while true; do python dashboard.py; echo '[dashboard] crashed or exited — restarting in 10s...'; sleep 10; done"
+echo "  ✓ dashboard started (auto-restart enabled)"
 
-screen -dmS webhook     bash -c "cd $DIR && source $VENV && python webhook.py"
-echo "  ✓ webhook started"
+screen -dmS webhook     bash -c "cd $DIR && source $VENV && while true; do python webhook.py; echo '[webhook] crashed or exited — restarting in 10s...'; sleep 10; done"
+echo "  ✓ webhook started (auto-restart enabled)"
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 echo ""
