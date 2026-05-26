@@ -74,7 +74,7 @@ def _fetch_price(symbol: str) -> float | None:
 
 def _fetch_rsi(symbol: str, interval: str = "4h") -> float | None:
     try:
-        candles = binance.get_candles(symbol, interval=interval, limit=50)
+        candles = binance.get_candles(symbol, interval=interval, limit=200)
         closes  = [c["close"] for c in candles]
         return binance._rsi(closes, 14)
     except Exception:

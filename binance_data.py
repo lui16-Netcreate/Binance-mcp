@@ -73,16 +73,17 @@ def _ema(closes: list[float], period: int) -> float | None:
 def _rsi(closes: list[float], period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None
-    gains, losses = [], []
-    for i in range(1, period + 1):
-        change = closes[-period - 1 + i] - closes[-period - 2 + i]
-        (gains if change >= 0 else losses).append(abs(change))
-    avg_gain = sum(gains) / period if gains else 0
-    avg_loss = sum(losses) / period if losses else 0
+    changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    # Seed with simple average of first `period` changes
+    avg_gain = sum(max(c, 0) for c in changes[:period]) / period
+    avg_loss = sum(abs(min(c, 0)) for c in changes[:period]) / period
+    # Wilder's smoothing over remaining candles
+    for change in changes[period:]:
+        avg_gain = (avg_gain * (period - 1) + max(change, 0)) / period
+        avg_loss = (avg_loss * (period - 1) + abs(min(change, 0))) / period
     if avg_loss == 0:
         return 100.0
-    rs = avg_gain / avg_loss
-    return round(100 - (100 / (1 + rs)), 2)
+    return round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
 
 
 def compute_fibonacci(candles: list[dict]) -> dict:
