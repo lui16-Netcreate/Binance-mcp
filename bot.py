@@ -352,15 +352,15 @@ def main():
             logging.info(f"Command: {text[:80]}")
             lower = text.lower()
 
-            if lower == "/status":
+            if lower.startswith("/status"):
                 handle_status()
-            elif lower == "/pending":
+            elif lower.startswith("/pending"):
                 handle_pending()
-            elif lower == "/balance":
+            elif lower.startswith("/balance"):
                 handle_balance(binance_client)
-            elif lower == "/pnl":
+            elif lower.startswith("/pnl"):
                 handle_pnl()
-            elif lower == "/report30":
+            elif lower.startswith("/report30"):
                 handle_report(days=30)
             elif lower.startswith("/report"):
                 handle_report(days=7)
