@@ -189,6 +189,18 @@ def handle_report(days: int = 7):
     send(build_report(trades, days, analysis))
 
 
+def handle_balance(binance_client):
+    if not binance_client:
+        send("⚠️ No Binance API keys configured.")
+        return
+    try:
+        from trader import get_usdt_balance
+        balance = get_usdt_balance(binance_client)
+        send(f"💵 *Available USDT:* `${balance:,.2f}`")
+    except Exception as e:
+        send(f"⚠️ Could not fetch balance: `{e}`")
+
+
 def handle_pnl():
     """Side-by-side P&L breakdown: Telegram signals vs your manual signals."""
     from analyzer import load_trades
@@ -292,6 +304,7 @@ HELP = (
     "/pending — open & pending trades with live price\n"
     "/report — last 7 days (Claude analysis)\n"
     "/report30 — last 30 days\n"
+    "/balance — available USDT balance\n"
     "/pnl — your signals vs Telegram signals\n"
     "/signal — submit your own trade\n\n"
     "Signal format:\n"
@@ -343,6 +356,8 @@ def main():
                 handle_status()
             elif lower == "/pending":
                 handle_pending()
+            elif lower == "/balance":
+                handle_balance(binance_client)
             elif lower == "/pnl":
                 handle_pnl()
             elif lower == "/report30":
