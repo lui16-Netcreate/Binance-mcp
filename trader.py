@@ -157,6 +157,28 @@ def get_usdt_balance(client: BinanceClient) -> float:
 
 # ── Order execution ───────────────────────────────────────────────────────────
 
+ENTRY_PRICE_MAX_DEVIATION = float(os.getenv("ENTRY_PRICE_MAX_DEVIATION", "0.05"))  # 5% default
+
+
+def _validate_entries_vs_live(symbol: str, entries: list[float]) -> tuple[bool, str]:
+    """Reject signal if all entry prices deviate more than ENTRY_PRICE_MAX_DEVIATION from live price."""
+    try:
+        live = float(binance_data.get_price(symbol)["price"])
+    except Exception as e:
+        return True, ""  # can't fetch price — allow through, don't block on API error
+    for entry in entries:
+        deviation = abs(entry - live) / live
+        if deviation <= ENTRY_PRICE_MAX_DEVIATION:
+            return True, ""  # at least one entry is close enough — valid
+    worst = max(abs(e - live) / live * 100 for e in entries)
+    return False, (
+        f"⚠️ *{symbol} signal rejected* — entries too far from live price\n"
+        f"Live: `${live:,.6f}`  Entries: {[f'${e:,.6f}' for e in entries]}\n"
+        f"Max deviation: `{worst:.1f}%` (limit: `{ENTRY_PRICE_MAX_DEVIATION*100:.0f}%`)\n"
+        f"Possible typo in signal — skipping to avoid bad trade."
+    )
+
+
 def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
     symbol    = signal["symbol"]
     direction = signal["direction"]
@@ -180,6 +202,17 @@ def execute_signal(client: BinanceClient | None, signal: dict) -> dict:
             "symbol": symbol, "direction": direction,
             "placed_orders": [], "usdt_balance": 0,
             "errors": [msg],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    valid, reject_msg = _validate_entries_vs_live(symbol, entries)
+    if not valid:
+        logging.warning(f"⚠️  Signal rejected: {symbol} entries too far from live price")
+        send_telegram(reject_msg)
+        return {
+            "symbol": symbol, "direction": direction,
+            "placed_orders": [], "usdt_balance": 0,
+            "errors": ["entries deviate too far from live price — possible typo"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
