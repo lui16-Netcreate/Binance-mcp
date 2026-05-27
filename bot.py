@@ -303,7 +303,6 @@ HELP = (
     "/status — health check + positions\n"
     "/pending — open & pending trades with live price\n"
     "/report — last 7 days (Claude analysis)\n"
-    "/report30 — last 30 days\n"
     "/balance — available USDT balance\n"
     "/pnl — your signals vs Telegram signals\n"
     "/signal — submit your own trade\n\n"
@@ -360,8 +359,6 @@ def main():
                 handle_balance(binance_client)
             elif lower.startswith("/pnl"):
                 handle_pnl()
-            elif lower.startswith("/report30"):
-                handle_report(days=30)
             elif lower.startswith("/report"):
                 handle_report(days=7)
             elif lower.startswith("/signal"):
