@@ -66,7 +66,7 @@ def send_telegram(msg: str):
 
 _P         = r"[\d,]+\.?\d*"
 _SYMBOL_RE = re.compile(r"\$([A-Z]+)", re.I)
-_DIR_RE    = re.compile(r"\b(LONG|SHORT)\b", re.I)
+_DIR_RE    = re.compile(r"\b(LONG|SHORT)(?:ED)?\b", re.I)
 _RANGE_RE  = re.compile(rf"({_P})\s*[-–]\s*({_P})")   # generic X - Y
 _TP_RE     = re.compile(rf"TP(\d)\s*[:/]\s*({_P})", re.I)
 _SL_RE     = re.compile(rf"SL\s*[:/]\s*({_P})", re.I)
