@@ -36,8 +36,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-DRY_RUN    = "--dry-run" in sys.argv
-TRADES_LOG = Path(__file__).parent / "trades.json"
+DRY_RUN         = "--dry-run" in sys.argv
+TRADES_LOG      = Path(__file__).parent / "trades.json"
+PENDING_CONFIRM = Path(__file__).parent / "pending_confirm.json"
 
 
 # ── Telegram helper ───────────────────────────────────────────────────────────
@@ -55,6 +56,39 @@ def send_telegram(msg: str):
         )
     except Exception as e:
         logging.warning(f"Telegram failed: {e}")
+
+
+def send_confirm_request(signal: dict):
+    token   = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    sym    = signal["symbol"]
+    entry  = signal["entries"][0]
+    tps    = signal.get("tps", {})
+    sl     = signal.get("sl")
+    tp_str = "  ".join(f"TP{k[-1]}: `${v:,.6f}`" for k, v in sorted(tps.items()))
+    sl_str = f"`${sl:,.6f}`" if sl else "?"
+    text   = (
+        f"⚠️ *{sym} {signal['direction']} — no DCA range*\n"
+        f"Entry: `${entry:,.6f}`\n"
+        f"{tp_str}\n"
+        f"SL: {sl_str}\n\n"
+        f"Do you want to enter this trade?"
+    )
+    keyboard = {"inline_keyboard": [[
+        {"text": "✅ Yes, enter", "callback_data": "confirm_trade"},
+        {"text": "❌ No, skip",   "callback_data": "skip_trade"},
+    ]]}
+    PENDING_CONFIRM.write_text(json.dumps(signal))
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": keyboard},
+            timeout=10,
+        )
+    except Exception as e:
+        logging.warning(f"Telegram confirm request failed: {e}")
 
 
 # ── Signal parser ─────────────────────────────────────────────────────────────
@@ -107,16 +141,18 @@ def parse_signal(text: str) -> dict | None:
         if not single:
             return None
         entries = [_p(single.group(1))]
+        needs_confirm = True
 
     tps = {f"tp{m.group(1)}": _p(m.group(2)) for m in _TP_RE.finditer(text)}
 
     return {
-        "symbol":    symbol,
-        "direction": direction,
-        "entries":   entries,
-        "sl":        sl_price,
-        "tps":       tps,
-        "raw":       text.strip(),
+        "symbol":       symbol,
+        "direction":    direction,
+        "entries":      entries,
+        "sl":           sl_price,
+        "tps":          tps,
+        "raw":          text.strip(),
+        "needs_confirm": locals().get("needs_confirm", False),
     }
 
 
@@ -430,6 +466,11 @@ async def main():
             f"📨 Signal: {signal['symbol']} {signal['direction']}  "
             f"entries={signal['entries']}  sl={signal['sl']}"
         )
+
+        if signal.get("needs_confirm"):
+            logging.info(f"⚠️  Single-price signal — sending confirmation request")
+            send_confirm_request(signal)
+            return
 
         confluence = await asyncio.to_thread(snapshot_confluence, signal["symbol"])
         rsi = confluence.get("indicators", {}).get("rsi_14", "?")

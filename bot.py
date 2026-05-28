@@ -26,7 +26,8 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-TRADES_LOG = Path(__file__).parent / "trades.json"
+TRADES_LOG      = Path(__file__).parent / "trades.json"
+PENDING_CONFIRM = Path(__file__).parent / "pending_confirm.json"
 
 load_dotenv()
 logging.basicConfig(
@@ -189,6 +190,50 @@ def handle_report(days: int = 7):
     send(build_report(trades, days, analysis))
 
 
+def answer_callback(callback_query_id: str, text: str = ""):
+    try:
+        requests.post(
+            f"{BASE}/answerCallbackQuery",
+            json={"callback_query_id": callback_query_id, "text": text},
+            timeout=10,
+        )
+    except Exception as e:
+        logging.warning(f"answerCallbackQuery failed: {e}")
+
+
+def handle_callback(callback_query: dict, binance_client):
+    cq_id = callback_query["id"]
+    data  = callback_query.get("data", "")
+
+    if data == "confirm_trade":
+        if not PENDING_CONFIRM.exists():
+            answer_callback(cq_id, "No pending signal found.")
+            send("⚠️ No pending signal found — it may have expired.")
+            return
+        signal = json.loads(PENDING_CONFIRM.read_text())
+        PENDING_CONFIRM.unlink()
+        answer_callback(cq_id, "Executing trade...")
+        send(f"✅ Executing *{signal['symbol']} {signal['direction']}*...")
+        try:
+            from trader import execute_signal, log_trade, snapshot_confluence, build_confirmation
+            result     = execute_signal(binance_client, signal)
+            confluence = snapshot_confluence(signal["symbol"])
+            log_trade(signal, result, confluence, source="telegram")
+            send(build_confirmation(signal, result))
+        except Exception as e:
+            logging.error(f"confirm_trade execution failed: {e}")
+            send(f"❌ Execution failed: `{e}`")
+
+    elif data == "skip_trade":
+        if PENDING_CONFIRM.exists():
+            signal = json.loads(PENDING_CONFIRM.read_text())
+            PENDING_CONFIRM.unlink()
+            answer_callback(cq_id, "Trade skipped.")
+            send(f"⏭️ *{signal['symbol']} {signal['direction']}* skipped.")
+        else:
+            answer_callback(cq_id, "No pending signal.")
+
+
 def handle_balance(binance_client):
     if not binance_client:
         send("⚠️ No Binance API keys configured.")
@@ -340,7 +385,16 @@ def main():
     while True:
         updates = get_updates(offset)
         for update in updates:
-            offset  = update["update_id"] + 1
+            offset = update["update_id"] + 1
+
+            # Handle inline button taps
+            if "callback_query" in update:
+                cq      = update["callback_query"]
+                cq_chat = str(cq.get("message", {}).get("chat", {}).get("id", ""))
+                if cq_chat == CHAT_ID:
+                    handle_callback(cq, binance_client)
+                continue
+
             msg     = update.get("message", {})
             chat_id = str(msg.get("chat", {}).get("id", ""))
             text    = msg.get("text", "").strip()
