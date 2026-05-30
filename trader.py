@@ -136,7 +136,8 @@ def parse_signal(text: str) -> dict | None:
         entries = [top, mid, bottom]
     else:
         # Single-price signal: take the first number after the direction word
-        after_dir = dir_line[dir_.end():]
+        dir_in_line = _DIR_RE.search(dir_line)
+        after_dir   = dir_line[dir_in_line.end():] if dir_in_line else dir_line
         single = re.search(rf"({_P})", after_dir)
         if not single:
             return None
