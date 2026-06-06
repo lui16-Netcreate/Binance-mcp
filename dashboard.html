@@ -180,7 +180,7 @@
     .filter-tabs {
       display: flex;
       gap: 8px;
-      margin-bottom: 14px;
+      margin-bottom: 0;
     }
     .filter-tab {
       padding: 4px 14px;
@@ -195,6 +195,25 @@
     }
     .filter-tab:hover  { border-color: var(--blue); color: var(--text); }
     .filter-tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .filter-tab.active.status-executed { background: var(--green); border-color: var(--green); }
+    .filter-tab.active.status-skipped  { background: var(--muted); border-color: var(--muted); }
+
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .filter-row-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--muted);
+      min-width: 44px;
+      flex-shrink: 0;
+    }
+
+    tr.row-skipped td { opacity: 0.45; }
 
     .price-up      { color: var(--green); }
     .price-down    { color: var(--red); }
@@ -277,10 +296,21 @@
 <div class="table-card">
   <h3>Trade History</h3>
 
-  <div class="filter-tabs">
-    <button class="filter-tab active" onclick="setFilter('all', this)">All</button>
-    <button class="filter-tab" onclick="setFilter('telegram', this)">🤖 Telegram</button>
-    <button class="filter-tab" onclick="setFilter('manual', this)">✍️ My Signals</button>
+  <div class="filter-row">
+    <span class="filter-row-label">Source</span>
+    <div class="filter-tabs" id="source-tabs">
+      <button class="filter-tab active" onclick="setSourceFilter('all', this)">All</button>
+      <button class="filter-tab" onclick="setSourceFilter('telegram', this)">🤖 Telegram</button>
+      <button class="filter-tab" onclick="setSourceFilter('manual', this)">✍️ My Signals</button>
+    </div>
+  </div>
+  <div class="filter-row" style="margin-bottom:14px">
+    <span class="filter-row-label">Status</span>
+    <div class="filter-tabs" id="status-tabs">
+      <button class="filter-tab active" onclick="setStatusFilter('all', this)">All</button>
+      <button class="filter-tab status-executed" onclick="setStatusFilter('executed', this)">✅ Executed</button>
+      <button class="filter-tab status-skipped"  onclick="setStatusFilter('skipped', this)">⏭️ Skipped</button>
+    </div>
   </div>
 
   <div id="empty" style="display:none">No trades logged yet. Waiting for first signal...</div>
@@ -305,10 +335,11 @@
 </div>
 
 <script>
-  let symbolChart  = null;
-  let rsiChart     = null;
-  let currentFilter = "all";
-  let allTrades     = [];
+  let symbolChart        = null;
+  let rsiChart           = null;
+  let currentSourceFilter = "all";
+  let currentStatusFilter = "all";
+  let allTrades           = [];
 
   function fmt(n, decimals = 4) {
     if (n == null) return "—";
@@ -320,9 +351,16 @@
     return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" });
   }
 
-  function setFilter(filter, btn) {
-    currentFilter = filter;
-    document.querySelectorAll(".filter-tab").forEach(b => b.classList.remove("active"));
+  function setSourceFilter(filter, btn) {
+    currentSourceFilter = filter;
+    document.querySelectorAll("#source-tabs .filter-tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    renderTrades();
+  }
+
+  function setStatusFilter(filter, btn) {
+    currentStatusFilter = filter;
+    document.querySelectorAll("#status-tabs .filter-tab").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     renderTrades();
   }
@@ -411,10 +449,30 @@
     renderTrades();
   }
 
+  function isExecuted(t) {
+    return t.result.placed_orders && t.result.placed_orders.length > 0;
+  }
+
+  function skipReason(t) {
+    const err = (t.result.errors || [])[0] || "";
+    if (err.includes("SHORT skipped"))      return "SHORT (spot-only)";
+    if (err.includes("deviate too far"))    return "Entry deviation";
+    if (err.includes("Insufficient"))       return "Low balance";
+    if (err.includes("minimum notional"))   return "Below min size";
+    if (err.includes("minQty"))             return "Below min qty";
+    return err || "Skipped";
+  }
+
   function renderTrades() {
-    const trades = currentFilter === "all"
-      ? allTrades
-      : allTrades.filter(t => (t.source || "telegram") === currentFilter);
+    let trades = allTrades;
+
+    if (currentSourceFilter !== "all") {
+      trades = trades.filter(t => (t.source || "telegram") === currentSourceFilter);
+    }
+    if (currentStatusFilter !== "all") {
+      const wantExecuted = currentStatusFilter === "executed";
+      trades = trades.filter(t => isExecuted(t) === wantExecuted);
+    }
 
     const tbody = document.getElementById("trades-body");
     tbody.innerHTML = "";
@@ -437,6 +495,7 @@
       const fg       = sent.fear_greed || {};
       const curPrice = t.current_price;
       const avgEntry = sig.entries.reduce((a,b) => a+b, 0) / sig.entries.length;
+      const executed = isExecuted(t);
 
       // Source badge
       const src      = t.source || "telegram";
@@ -446,13 +505,16 @@
       // Current price
       let priceClass = "price-neutral";
       let priceStr   = curPrice ? fmt(curPrice) : "—";
-      if (curPrice && sig.direction === "LONG") {
+      if (executed && curPrice && sig.direction === "LONG") {
         priceClass = curPrice >= avgEntry ? "price-up" : "price-down";
       }
 
-      // P&L
+      // P&L / status
       let pnlStr = "—", pnlClass = "price-neutral";
-      if (t.trade_closed && t.total_pnl_usdt != null) {
+      if (!executed) {
+        pnlStr  = `<span style="font-size:11px;color:var(--muted)">${skipReason(t)}</span>`;
+        pnlClass = "";
+      } else if (t.trade_closed && t.total_pnl_usdt != null) {
         const p = pnlDisplay(t.total_pnl_usdt);
         pnlStr  = p.text;
         pnlClass = p.cls;
@@ -464,6 +526,7 @@
       const entryLines = sig.entries.map(e => `<div>${fmt(e, 4)}</div>`).join("");
 
       const row = document.createElement("tr");
+      if (!executed) row.classList.add("row-skipped");
       row.innerHTML = `
         <td style="color:var(--muted);white-space:nowrap">${timeAgo(res.timestamp)}</td>
         <td><strong>${sig.symbol.replace("USDT","")}</strong><div style="color:var(--muted);font-size:11px">USDT</div></td>
@@ -474,7 +537,7 @@
         <td style="color:var(--red)">${fmt(sig.sl, 4)}</td>
         <td style="color:var(--yellow)">${ind.rsi_14 ?? "—"}</td>
         <td style="color:var(--purple)">${fg.value != null ? fg.value + "<br><span style='font-size:10px;color:var(--muted)'>" + fg.classification + "</span>" : "—"}</td>
-        <td class="${priceClass}">${priceStr}</td>
+        <td class="${priceClass}">${executed ? priceStr : "—"}</td>
         <td class="${pnlClass}" style="white-space:nowrap;font-weight:600">${pnlStr}</td>
       `;
       tbody.appendChild(row);
