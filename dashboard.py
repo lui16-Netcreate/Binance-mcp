@@ -22,7 +22,8 @@ import binance_data
 
 load_dotenv()
 
-TRADES_LOG = Path(__file__).parent / "trades.json"
+TRADES_LOG        = Path(__file__).parent / "trades.json"
+ERRORS_CLEARED_AT = Path(__file__).parent / "errors_cleared_at.json"
 
 app      = FastAPI(title="Crypto Auto-Trader Dashboard")
 security = HTTPBasic()
@@ -102,7 +103,14 @@ async def api_summary(_: None = Depends(require_auth)):
 
     longs  = sum(1 for t in trades if t["signal"]["direction"] == "LONG")
     shorts = sum(1 for t in trades if t["signal"]["direction"] == "SHORT")
-    errors = sum(1 for t in trades if t["result"].get("errors"))
+    cleared_at = None
+    if ERRORS_CLEARED_AT.exists():
+        cleared_at = json.loads(ERRORS_CLEARED_AT.read_text()).get("ts")
+    errors = sum(
+        1 for t in trades
+        if t["result"].get("errors")
+        and (not cleared_at or t["result"].get("timestamp", "") > cleared_at)
+    )
 
     rsis = [
         t["confluence"]["indicators"]["rsi_14"]
@@ -131,6 +139,14 @@ async def api_summary(_: None = Depends(require_auth)):
             "manual":   _pnl_stats(trades, "manual"),
         },
     })
+
+
+@app.post("/api/clear-errors")
+async def api_clear_errors(_: None = Depends(require_auth)):
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).isoformat()
+    ERRORS_CLEARED_AT.write_text(json.dumps({"ts": ts}))
+    return JSONResponse({"cleared_at": ts})
 
 
 @app.get("/api/top-volume")

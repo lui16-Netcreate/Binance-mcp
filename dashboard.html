@@ -274,6 +274,7 @@
   <div class="card">
     <div class="label">With Errors</div>
     <div class="value red" id="c-errors">—</div>
+    <button onclick="clearErrors()" id="clear-errors-btn" style="display:none;margin-top:8px;padding:2px 10px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:11px;cursor:pointer">✕ Clear</button>
   </div>
 </div>
 
@@ -430,7 +431,9 @@
     document.getElementById("c-shorts").textContent = d.shorts ?? "—";
     document.getElementById("c-rsi").textContent    = d.avg_rsi ?? "—";
     document.getElementById("c-fg").textContent     = d.avg_fg != null ? d.avg_fg + "/100" : "—";
-    document.getElementById("c-errors").textContent = d.errors ?? "—";
+    const errCount = d.errors ?? 0;
+    document.getElementById("c-errors").textContent = errCount || "—";
+    document.getElementById("clear-errors-btn").style.display = errCount > 0 ? "inline-block" : "none";
 
     // P&L by source
     const pnl = d.pnl || {};
@@ -596,6 +599,11 @@
       `;
       tbody.appendChild(row);
     });
+  }
+
+  async function clearErrors() {
+    await fetch("/api/clear-errors", { method: "POST" });
+    await loadSummary();
   }
 
   function fmtVol(v) {
