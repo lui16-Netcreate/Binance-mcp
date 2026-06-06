@@ -222,6 +222,18 @@
     .tps     { color: var(--muted); font-size: 11px; line-height: 1.6; }
     .entries { font-size: 12px; line-height: 1.6; }
 
+    .conf-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(88,166,255,.15);
+      color: var(--blue);
+      margin: 1px 2px 1px 0;
+      white-space: nowrap;
+    }
+
     #empty {
       text-align: center;
       padding: 48px;
@@ -326,6 +338,7 @@
         <th>SL</th>
         <th>RSI</th>
         <th>F&G</th>
+        <th>Confluence</th>
         <th>Price</th>
         <th>P&L</th>
       </tr>
@@ -335,6 +348,21 @@
 </div>
 
 <script>
+  const INDICATOR_LABELS = {
+    rsi_oversold:   "RSI Oversold",
+    rsi_overbought: "RSI Overbought",
+    fib_618:        "Fib .618",
+    fib_786:        "Fib .786",
+    ema_support:    "EMA Support",
+    ema_resistance: "EMA Resistance",
+    volume_spike:   "Vol Spike",
+    macd_cross:     "MACD Cross",
+    sr_level:       "S/R Level",
+    bb_squeeze:     "Bol. Band",
+    divergence:     "Divergence",
+    order_block:    "Order Block",
+  };
+
   let symbolChart        = null;
   let rsiChart           = null;
   let currentSourceFilter = "all";
@@ -546,6 +574,7 @@
         <td style="color:var(--red)">${fmt(sig.sl, 4)}</td>
         <td style="color:var(--yellow)">${ind.rsi_14 ?? "—"}</td>
         <td style="color:var(--purple)">${fg.value != null ? fg.value + "<br><span style='font-size:10px;color:var(--muted)'>" + fg.classification + "</span>" : "—"}</td>
+        <td>${(t.manual_confluences || []).map(k => `<span class="conf-badge">${INDICATOR_LABELS[k] || k}</span>`).join("") || '<span style="color:var(--muted)">—</span>'}</td>
         <td class="${priceClass}">${executed ? priceStr : "—"}</td>
         <td class="${pnlClass}" style="white-space:nowrap;font-weight:600">${pnlStr}</td>
       `;
