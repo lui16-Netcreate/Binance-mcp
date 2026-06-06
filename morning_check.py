@@ -133,6 +133,8 @@ def categorize_trades(trades: list[dict]) -> tuple[list, list]:
         filled   = [o for o in live_orders if o.get("filled_qty")]
         unfilled = [o for o in live_orders if not o.get("filled_qty") and not o.get("tp_sl_placed")]
 
+        sl = signal.get("sl")
+
         if filled and not trade.get("trade_closed"):
             avg_prices = [o["avg_fill_price"] for o in filled if o.get("avg_fill_price")]
             avg_entry  = sum(avg_prices) / len(avg_prices) if avg_prices else None
@@ -143,6 +145,7 @@ def categorize_trades(trades: list[dict]) -> tuple[list, list]:
                 "avg_entry": avg_entry,
                 "n_filled":  len(filled),
                 "tp_hit":    tp_hit,
+                "sl":        sl,
             })
         elif unfilled:
             prices = sorted(set(o["price"] for o in unfilled))
@@ -151,6 +154,7 @@ def categorize_trades(trades: list[dict]) -> tuple[list, list]:
                 "direction": direction,
                 "prices":    prices,
                 "n":         len(unfilled),
+                "sl":        sl,
             })
 
     return pending, active
@@ -196,7 +200,8 @@ def build_message(pending: list, active: list) -> str:
             lines.append(f"⏳ *Pending fills ({len(pending)}):*")
             for p in pending:
                 prices_str = " / ".join(f"${x:,.2f}" for x in p["prices"])
-                lines.append(f"  {p['symbol']} {p['direction']} — {p['n']} orders @ {prices_str}")
+                sl_str     = f"  🛑 SL: `${p['sl']:,.4f}`" if p.get("sl") else ""
+                lines.append(f"  {p['symbol']} {p['direction']} — {p['n']} orders @ {prices_str}{sl_str}")
 
         if active:
             lines.append("")
@@ -211,9 +216,10 @@ def build_message(pending: list, active: list) -> str:
                         pct  = (current - a["avg_entry"]) / a["avg_entry"] * 100
                         sign = "+" if pct >= 0 else ""
                         pnl_str = f"  `{sign}{pct:.2f}%`"
-                rsi = _fetch_rsi(a["symbol"])
+                rsi     = _fetch_rsi(a["symbol"])
                 rsi_str = f"  RSI(14) 4h: `{rsi}` {_rsi_emoji(rsi)}" if rsi is not None else ""
-                lines.append(f"  {a['symbol']} {a['direction']} @ {entry_str}{pnl_str}{rsi_str}{note}")
+                sl_str  = f"\n    🛑 SL: `${a['sl']:,.4f}`" if a.get("sl") else ""
+                lines.append(f"  {a['symbol']} {a['direction']} @ {entry_str}{pnl_str}{rsi_str}{note}{sl_str}")
 
     warnings = []
     if trader_n == 0 or fill_n == 0:
