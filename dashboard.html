@@ -305,6 +305,22 @@
   </div>
 </div>
 
+<div class="section-label">Top Volume — 24h</div>
+<div class="table-card" style="margin-bottom:24px">
+  <table id="volume-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Symbol</th>
+        <th>Price</th>
+        <th>24h Change</th>
+        <th>24h Volume</th>
+      </tr>
+    </thead>
+    <tbody id="volume-body"></tbody>
+  </table>
+</div>
+
 <div class="table-card">
   <h3>Trade History</h3>
 
@@ -582,8 +598,40 @@
     });
   }
 
+  function fmtVol(v) {
+    if (v >= 1e9) return "$" + (v / 1e9).toFixed(2) + "B";
+    if (v >= 1e6) return "$" + (v / 1e6).toFixed(1) + "M";
+    return "$" + (v / 1e3).toFixed(0) + "K";
+  }
+
+  async function loadTopVolume() {
+    try {
+      const r    = await fetch("/api/top-volume");
+      const data = await r.json();
+      const tbody = document.getElementById("volume-body");
+      tbody.innerHTML = "";
+      data.forEach((coin, i) => {
+        const chg     = coin.change_pct;
+        const chgCls  = chg >= 0 ? "price-up" : "price-down";
+        const chgStr  = (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
+        const decimals = coin.price >= 100 ? 2 : coin.price >= 1 ? 4 : 6;
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td style="color:var(--muted)">${i + 1}</td>
+          <td><strong>${coin.symbol.replace("USDT", "")}</strong><span style="color:var(--muted);font-size:11px"> /USDT</span></td>
+          <td>${fmt(coin.price, decimals)}</td>
+          <td class="${chgCls}" style="font-weight:600">${chgStr}</td>
+          <td style="color:var(--text)">${fmtVol(coin.quote_volume)}</td>
+        `;
+        tbody.appendChild(row);
+      });
+    } catch (e) {
+      console.warn("top-volume fetch failed", e);
+    }
+  }
+
   async function refresh() {
-    await Promise.all([loadSummary(), loadTrades()]);
+    await Promise.all([loadSummary(), loadTrades(), loadTopVolume()]);
     document.getElementById("last-updated").textContent =
       "Updated " + new Date().toLocaleTimeString();
   }

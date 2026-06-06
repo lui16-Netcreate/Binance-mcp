@@ -52,6 +52,24 @@ def get_top_movers(quote: str = "USDT", top_n: int = 10) -> dict:
     return {"gainers": gainers, "losers": losers}
 
 
+def get_top_volume(quote: str = "USDT", top_n: int = 10) -> list:
+    all_tickers = get_24hr_stats()
+    usdt_pairs = [
+        t for t in all_tickers
+        if t["symbol"].endswith(quote.upper()) and float(t["quoteVolume"]) > 0
+    ]
+    top = sorted(usdt_pairs, key=lambda t: float(t["quoteVolume"]), reverse=True)[:top_n]
+    return [
+        {
+            "symbol":       t["symbol"],
+            "price":        float(t["lastPrice"]),
+            "change_pct":   round(float(t["priceChangePercent"]), 2),
+            "quote_volume": round(float(t["quoteVolume"])),
+        }
+        for t in top
+    ]
+
+
 # ── Indicators ────────────────────────────────────────────────────────────────
 
 def _sma(closes: list[float], period: int) -> float | None:
