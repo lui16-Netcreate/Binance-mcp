@@ -365,10 +365,16 @@
     renderTrades();
   }
 
-  function pnlDisplay(value) {
-    if (value == null) return { text: "—", cls: "" };
-    const sign = value >= 0 ? "+" : "";
-    return { text: sign + value.toFixed(2) + " USDT", cls: value >= 0 ? "price-up" : "price-down" };
+  function pnlDisplay(value, cost = null) {
+    if (value == null) return { text: "—", html: "—", cls: "" };
+    const sign  = value >= 0 ? "+" : "";
+    const usdt  = sign + value.toFixed(2) + " USDT";
+    let html = usdt;
+    if (cost != null && cost > 0) {
+      const pct = (value / cost * 100).toFixed(2);
+      html = `${usdt}<div style="font-size:11px;opacity:.65;font-weight:400">${sign}${pct}%</div>`;
+    }
+    return { text: usdt, html, cls: value >= 0 ? "price-up" : "price-down" };
   }
 
   async function loadSummary() {
@@ -509,14 +515,17 @@
         priceClass = curPrice >= avgEntry ? "price-up" : "price-down";
       }
 
+      // Cost basis from filled entry orders
+      const cost = (res.placed_orders || []).reduce((s, o) => s + o.price * (o.filled_qty || o.qty || 0), 0);
+
       // P&L / status
       let pnlStr = "—", pnlClass = "price-neutral";
       if (!executed) {
         pnlStr  = `<span style="font-size:11px;color:var(--muted)">${skipReason(t)}</span>`;
         pnlClass = "";
       } else if (t.trade_closed && t.total_pnl_usdt != null) {
-        const p = pnlDisplay(t.total_pnl_usdt);
-        pnlStr  = p.text;
+        const p = pnlDisplay(t.total_pnl_usdt, cost);
+        pnlStr  = p.html;
         pnlClass = p.cls;
       } else if (res.placed_orders.some(o => o.filled_qty)) {
         pnlStr = "Open";
