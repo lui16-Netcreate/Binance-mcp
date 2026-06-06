@@ -29,6 +29,21 @@ from dotenv import load_dotenv
 TRADES_LOG      = Path(__file__).parent / "trades.json"
 PENDING_CONFIRM = Path(__file__).parent / "pending_confirm.json"
 
+INDICATOR_OPTIONS = [
+    ("RSI Oversold",   "rsi_oversold"),
+    ("RSI Overbought", "rsi_overbought"),
+    ("Fib 0.618",      "fib_618"),
+    ("Fib 0.786",      "fib_786"),
+    ("EMA Support",    "ema_support"),
+    ("EMA Resistance", "ema_resistance"),
+    ("Volume Spike",   "volume_spike"),
+    ("MACD Cross",     "macd_cross"),
+    ("S/R Level",      "sr_level"),
+    ("Bollinger Band", "bb_squeeze"),
+]
+
+pending_indicators: dict = {}  # chat_id → {symbol, message_id, selected: set}
+
 load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
@@ -63,6 +78,74 @@ def get_updates(offset: int) -> list:
     except Exception as e:
         logging.warning(f"getUpdates failed: {e}")
         return []
+
+
+def send_with_keyboard(msg: str, keyboard: dict) -> int | None:
+    try:
+        r = requests.post(
+            f"{BASE}/sendMessage",
+            json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown", "reply_markup": keyboard},
+            timeout=10,
+        )
+        return r.json().get("result", {}).get("message_id")
+    except Exception as e:
+        logging.warning(f"send_with_keyboard failed: {e}")
+        return None
+
+
+def edit_message_keyboard(message_id: int, keyboard: dict):
+    try:
+        requests.post(
+            f"{BASE}/editMessageReplyMarkup",
+            json={"chat_id": CHAT_ID, "message_id": message_id, "reply_markup": keyboard},
+            timeout=10,
+        )
+    except Exception as e:
+        logging.warning(f"editMessageReplyMarkup failed: {e}")
+
+
+def edit_message_text(message_id: int, text: str):
+    try:
+        requests.post(
+            f"{BASE}/editMessageText",
+            json={"chat_id": CHAT_ID, "message_id": message_id, "text": text, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception as e:
+        logging.warning(f"editMessageText failed: {e}")
+
+
+def build_indicator_keyboard(selected: set) -> dict:
+    rows = []
+    for i in range(0, len(INDICATOR_OPTIONS), 2):
+        row = []
+        for label, key in INDICATOR_OPTIONS[i:i + 2]:
+            prefix = "✅ " if key in selected else ""
+            row.append({"text": prefix + label, "callback_data": f"ind_toggle_{key}"})
+        rows.append(row)
+    rows.append([
+        {"text": "💾 Save", "callback_data": "ind_save"},
+        {"text": "Skip",    "callback_data": "ind_skip"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def send_indicator_prompt(symbol: str):
+    keyboard = build_indicator_keyboard(set())
+    msg_id   = send_with_keyboard(
+        f"📊 *What confluence did you see for {symbol}?*\nTap to select, then Save.",
+        keyboard,
+    )
+    pending_indicators[CHAT_ID] = {"symbol": symbol, "message_id": msg_id, "selected": set()}
+
+
+def save_manual_confluences(symbol: str, indicators: list):
+    trades = json.loads(TRADES_LOG.read_text()) if TRADES_LOG.exists() else []
+    for t in reversed(trades):
+        if t.get("source") == "manual" and t["signal"]["symbol"] == symbol:
+            t["manual_confluences"] = indicators
+            break
+    TRADES_LOG.write_text(json.dumps(trades, indent=2))
 
 
 def handle_status():
@@ -233,6 +316,49 @@ def handle_callback(callback_query: dict, binance_client):
         else:
             answer_callback(cq_id, "No pending signal.")
 
+    elif data.startswith("ind_toggle_"):
+        state = pending_indicators.get(CHAT_ID)
+        if not state:
+            answer_callback(cq_id, "Session expired — re-submit the signal.")
+            return
+        key = data[len("ind_toggle_"):]
+        if key in state["selected"]:
+            state["selected"].discard(key)
+        else:
+            state["selected"].add(key)
+        answer_callback(cq_id)
+        if state["message_id"]:
+            edit_message_keyboard(state["message_id"], build_indicator_keyboard(state["selected"]))
+
+    elif data == "ind_save":
+        state = pending_indicators.pop(CHAT_ID, None)
+        if not state:
+            answer_callback(cq_id, "Session expired.")
+            return
+        indicators = [key for _, key in INDICATOR_OPTIONS if key in state["selected"]]
+        if indicators:
+            try:
+                save_manual_confluences(state["symbol"], indicators)
+                labels = [lbl for lbl, key in INDICATOR_OPTIONS if key in state["selected"]]
+                answer_callback(cq_id, "Saved!")
+                if state["message_id"]:
+                    edit_message_text(state["message_id"], f"📊 *Confluence saved for {state['symbol']}:*\n" + ", ".join(labels))
+            except Exception as e:
+                logging.warning(f"save_manual_confluences failed: {e}")
+                answer_callback(cq_id, "Save failed.")
+        else:
+            answer_callback(cq_id, "Nothing selected — skipped.")
+            if state["message_id"]:
+                edit_message_text(state["message_id"], "📊 No confluence recorded.")
+
+    elif data == "ind_skip":
+        pending_indicators.pop(CHAT_ID, None)
+        answer_callback(cq_id, "Skipped.")
+        msg_id = (pending_indicators.get(CHAT_ID) or {}).get("message_id")
+        cq_msg_id = callback_query.get("message", {}).get("message_id")
+        if cq_msg_id:
+            edit_message_text(cq_msg_id, "📊 No confluence recorded.")
+
 
 def handle_balance(binance_client):
     if not binance_client:
@@ -324,6 +450,7 @@ def handle_signal(raw_text: str, binance_client):
         return
     log_trade(signal, result, confluence=None, source="manual", notes=notes)
     send(build_confirmation(signal, result))
+    send_indicator_prompt(signal["symbol"])
 
     # Fetch confluence in background and update the trade log
     def fetch_and_update():
