@@ -44,7 +44,7 @@ INDICATOR_OPTIONS = [
     ("Order Block",    "order_block"),
 ]
 
-pending_indicators: dict = {}  # chat_id → {symbol, message_id, selected: set}
+PENDING_INDICATOR_STATE = Path(__file__).parent / "pending_indicator_state.json"
 
 load_dotenv()
 logging.basicConfig(
@@ -132,19 +132,21 @@ def build_indicator_keyboard(selected: set) -> dict:
     return {"inline_keyboard": rows}
 
 
-def send_indicator_prompt(symbol: str):
+def send_indicator_prompt(symbol: str, source: str = "manual"):
     keyboard = build_indicator_keyboard(set())
     msg_id   = send_with_keyboard(
         f"📊 *What confluence did you see for {symbol}?*\nTap to select, then Save.",
         keyboard,
     )
-    pending_indicators[CHAT_ID] = {"symbol": symbol, "message_id": msg_id, "selected": set()}
+    PENDING_INDICATOR_STATE.write_text(json.dumps({
+        "symbol": symbol, "source": source, "message_id": msg_id, "selected": [],
+    }))
 
 
-def save_manual_confluences(symbol: str, indicators: list):
+def save_manual_confluences(symbol: str, indicators: list, source: str = "manual"):
     trades = json.loads(TRADES_LOG.read_text()) if TRADES_LOG.exists() else []
     for t in reversed(trades):
-        if t.get("source") == "manual" and t["signal"]["symbol"] == symbol:
+        if t.get("source", "telegram") == source and t["signal"]["symbol"] == symbol:
             t["manual_confluences"] = indicators
             break
     TRADES_LOG.write_text(json.dumps(trades, indent=2))
@@ -319,48 +321,46 @@ def handle_callback(callback_query: dict, binance_client):
             answer_callback(cq_id, "No pending signal.")
 
     elif data.startswith("ind_toggle_"):
-        state = pending_indicators.get(CHAT_ID)
-        if not state:
+        if not PENDING_INDICATOR_STATE.exists():
             answer_callback(cq_id, "Session expired — re-submit the signal.")
             return
-        key = data[len("ind_toggle_"):]
-        if key in state["selected"]:
-            state["selected"].discard(key)
+        state    = json.loads(PENDING_INDICATOR_STATE.read_text())
+        key      = data[len("ind_toggle_"):]
+        selected = set(state["selected"])
+        if key in selected:
+            selected.discard(key)
         else:
-            state["selected"].add(key)
+            selected.add(key)
+        state["selected"] = list(selected)
+        PENDING_INDICATOR_STATE.write_text(json.dumps(state))
         answer_callback(cq_id)
-        if state["message_id"]:
-            edit_message_keyboard(state["message_id"], build_indicator_keyboard(state["selected"]))
+        if state.get("message_id"):
+            edit_message_keyboard(state["message_id"], build_indicator_keyboard(selected))
 
     elif data == "ind_save":
-        state = pending_indicators.pop(CHAT_ID, None)
-        if not state:
+        if not PENDING_INDICATOR_STATE.exists():
             answer_callback(cq_id, "Session expired.")
             return
+        state      = json.loads(PENDING_INDICATOR_STATE.read_text())
         indicators = [key for _, key in INDICATOR_OPTIONS if key in state["selected"]]
         if len(indicators) < 2:
-            pending_indicators[CHAT_ID] = state  # put it back
             answer_callback(cq_id, "Select at least 2 indicators before saving.")
             return
-        if indicators:
-            try:
-                save_manual_confluences(state["symbol"], indicators)
-                labels = [lbl for lbl, key in INDICATOR_OPTIONS if key in state["selected"]]
-                answer_callback(cq_id, "Saved!")
-                if state["message_id"]:
-                    edit_message_text(state["message_id"], f"📊 *Confluence saved for {state['symbol']}:*\n" + ", ".join(labels))
-            except Exception as e:
-                logging.warning(f"save_manual_confluences failed: {e}")
-                answer_callback(cq_id, "Save failed.")
-        else:
-            answer_callback(cq_id, "Nothing selected — skipped.")
-            if state["message_id"]:
-                edit_message_text(state["message_id"], "📊 No confluence recorded.")
+        PENDING_INDICATOR_STATE.unlink()
+        try:
+            save_manual_confluences(state["symbol"], indicators, source=state.get("source", "manual"))
+            labels = [lbl for lbl, key in INDICATOR_OPTIONS if key in state["selected"]]
+            answer_callback(cq_id, "Saved!")
+            if state.get("message_id"):
+                edit_message_text(state["message_id"], f"📊 *Confluence saved for {state['symbol']}:*\n" + ", ".join(labels))
+        except Exception as e:
+            logging.warning(f"save_manual_confluences failed: {e}")
+            answer_callback(cq_id, "Save failed.")
 
     elif data == "ind_skip":
-        pending_indicators.pop(CHAT_ID, None)
+        if PENDING_INDICATOR_STATE.exists():
+            PENDING_INDICATOR_STATE.unlink()
         answer_callback(cq_id, "Skipped.")
-        msg_id = (pending_indicators.get(CHAT_ID) or {}).get("message_id")
         cq_msg_id = callback_query.get("message", {}).get("message_id")
         if cq_msg_id:
             edit_message_text(cq_msg_id, "📊 No confluence recorded.")

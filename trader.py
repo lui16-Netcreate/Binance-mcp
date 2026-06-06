@@ -36,9 +36,25 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-DRY_RUN         = "--dry-run" in sys.argv
-TRADES_LOG      = Path(__file__).parent / "trades.json"
-PENDING_CONFIRM = Path(__file__).parent / "pending_confirm.json"
+DRY_RUN                 = "--dry-run" in sys.argv
+TRADES_LOG              = Path(__file__).parent / "trades.json"
+PENDING_CONFIRM         = Path(__file__).parent / "pending_confirm.json"
+PENDING_INDICATOR_STATE = Path(__file__).parent / "pending_indicator_state.json"
+
+INDICATOR_OPTIONS = [
+    ("RSI Oversold",   "rsi_oversold"),
+    ("RSI Overbought", "rsi_overbought"),
+    ("Fib 0.618",      "fib_618"),
+    ("Fib 0.786",      "fib_786"),
+    ("EMA Support",    "ema_support"),
+    ("EMA Resistance", "ema_resistance"),
+    ("Volume Spike",   "volume_spike"),
+    ("MACD Cross",     "macd_cross"),
+    ("S/R Level",      "sr_level"),
+    ("Bollinger Band", "bb_squeeze"),
+    ("Divergence",     "divergence"),
+    ("Order Block",    "order_block"),
+]
 
 
 # ── Telegram helper ───────────────────────────────────────────────────────────
@@ -56,6 +72,40 @@ def send_telegram(msg: str):
         )
     except Exception as e:
         logging.warning(f"Telegram failed: {e}")
+
+
+def send_indicator_prompt(symbol: str):
+    token   = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    rows = []
+    for i in range(0, len(INDICATOR_OPTIONS), 2):
+        row = []
+        for label, key in INDICATOR_OPTIONS[i:i + 2]:
+            row.append({"text": label, "callback_data": f"ind_toggle_{key}"})
+        rows.append(row)
+    rows.append([
+        {"text": "💾 Save", "callback_data": "ind_save"},
+        {"text": "Skip",    "callback_data": "ind_skip"},
+    ])
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id":      chat_id,
+                "text":         f"📊 *What confluence did you see for {symbol}?*\nTap to select, then Save.",
+                "parse_mode":   "Markdown",
+                "reply_markup": {"inline_keyboard": rows},
+            },
+            timeout=10,
+        )
+        msg_id = r.json().get("result", {}).get("message_id")
+        PENDING_INDICATOR_STATE.write_text(json.dumps({
+            "symbol": symbol, "source": "telegram", "message_id": msg_id, "selected": [],
+        }))
+    except Exception as e:
+        logging.warning(f"send_indicator_prompt failed: {e}")
 
 
 def send_confirm_request(signal: dict):
@@ -481,6 +531,7 @@ async def main():
         result = execute_signal(binance_client, signal)
         log_trade(signal, result, confluence)
         send_telegram(build_confirmation(signal, result))
+        send_indicator_prompt(signal["symbol"])
 
     HEARTBEAT = Path(__file__).parent / "trader.heartbeat"
 
