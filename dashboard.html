@@ -271,10 +271,6 @@
     <div class="label">Avg Fear & Greed</div>
     <div class="value purple" id="c-fg">—</div>
   </div>
-  <div class="card">
-    <div class="label">With Errors</div>
-    <div class="value red" id="c-errors">—</div>
-  </div>
 </div>
 
 <!-- P&L comparison -->
@@ -430,7 +426,7 @@
     document.getElementById("c-shorts").textContent = d.shorts ?? "—";
     document.getElementById("c-rsi").textContent    = d.avg_rsi ?? "—";
     document.getElementById("c-fg").textContent     = d.avg_fg != null ? d.avg_fg + "/100" : "—";
-    document.getElementById("c-errors").textContent = d.errors ?? "—";
+
 
     // P&L by source
     const pnl = d.pnl || {};
