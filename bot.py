@@ -40,6 +40,8 @@ INDICATOR_OPTIONS = [
     ("MACD Cross",     "macd_cross"),
     ("S/R Level",      "sr_level"),
     ("Bollinger Band", "bb_squeeze"),
+    ("Divergence",     "divergence"),
+    ("Order Block",    "order_block"),
 ]
 
 pending_indicators: dict = {}  # chat_id → {symbol, message_id, selected: set}
@@ -336,6 +338,10 @@ def handle_callback(callback_query: dict, binance_client):
             answer_callback(cq_id, "Session expired.")
             return
         indicators = [key for _, key in INDICATOR_OPTIONS if key in state["selected"]]
+        if len(indicators) < 2:
+            pending_indicators[CHAT_ID] = state  # put it back
+            answer_callback(cq_id, "Select at least 2 indicators before saving.")
+            return
         if indicators:
             try:
                 save_manual_confluences(state["symbol"], indicators)
