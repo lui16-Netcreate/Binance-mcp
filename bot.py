@@ -444,7 +444,7 @@ def handle_signal(raw_text: str, binance_client):
     # If no TPs specified, auto-calculate at fill time from avg entry price
     if not signal["tps"]:
         signal["tp_mode"]   = "auto_pct"
-        signal["tp_pcts"]   = [0.05, 0.10]
+        signal["tp_pcts"]   = [0.07, 0.15]
         signal["tp_splits"] = [0.50, 0.50]
 
     # Execute order immediately — don't wait for confluence snapshot
