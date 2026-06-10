@@ -171,13 +171,13 @@ def _p(s: str) -> float:
 def parse_signal(text: str) -> dict | None:
     sym  = _SYMBOL_RE.search(text)
     dir_ = _DIR_RE.search(text)
-    sl   = _SL_RE.search(text)
-    if not sym or not dir_ or not sl:
+    if not sym or not dir_:
         return None
 
     symbol    = sym.group(1).upper() + "USDT"
     direction = dir_.group(1).upper()
-    sl_price  = _p(sl.group(1))
+    sl_m      = _SL_RE.search(text)
+    sl_price  = _p(sl_m.group(1)) if sl_m else None
 
     # Find entry range on the same line as the direction word (avoids TP/SL lines)
     dir_line = next(
@@ -457,7 +457,10 @@ def build_confirmation(signal: dict, result: dict) -> str:
         )
         msg += f"🎯 TPs (auto at fill):\n  {tp_lines}\n"
 
-    msg += f"🛑 SL: `${sl:,.2f}`\n"
+    if signal.get("sl_auto"):
+        msg += f"🛑 SL: `${sl:,.6f}` _(auto {signal['sl_pct']*100:.0f}% below entry)_\n"
+    else:
+        msg += f"🛑 SL: `${sl:,.6f}`\n"
     order_size = float(os.getenv("ORDER_SIZE_USD", str(result['usdt_balance'] * 0.01)))
     total_used = order_size * len(placed)
     msg += f"💼 Total deployed: `${total_used:,.2f}` (`${order_size:.0f}` × {len(placed)} orders)\n"
@@ -518,13 +521,39 @@ async def main():
 
         signal = parse_signal(event.raw_text)
         if not signal:
-            logging.warning("⚠️  Message not parsed as signal — skipped")
+            _sym = _SYMBOL_RE.search(event.raw_text)
+            _dir = _DIR_RE.search(event.raw_text)
+            missing = [n for n, m in [("symbol", _sym), ("direction", _dir)] if not m]
+            logging.warning(f"⚠️  Message not parsed — missing: {missing}\n{event.raw_text[:300]}")
             send_telegram(
-                f"⚠️ *Signal not recognized — review needed*\n\n"
+                f"⚠️ *Signal not recognized — review needed*\n"
+                f"_Missing: {', '.join(missing) if missing else 'unknown'}_\n\n"
                 f"{event.raw_text[:600]}\n\n"
                 f"_Submit manually with /signal if this is a trade._"
             )
             return
+
+        if signal["sl"] is None:
+            sl_pct_env = os.getenv("DEFAULT_SL_PCT")
+            if not sl_pct_env:
+                logging.warning(f"⚠️  {signal['symbol']} signal has no SL and DEFAULT_SL_PCT not set — skipping")
+                send_telegram(
+                    f"⚠️ *{signal['symbol']} signal skipped — no SL found*\n"
+                    f"_Signal contains no SL line and DEFAULT\\_SL\\_PCT is not set in .env_\n\n"
+                    f"{event.raw_text[:400]}\n\n"
+                    f"_Set DEFAULT\\_SL\\_PCT=0.05 in .env, or submit manually with /signal including SL._"
+                )
+                return
+            sl_pct      = float(sl_pct_env)
+            bottom      = min(signal["entries"])
+            auto_sl     = round(bottom * (1 - sl_pct), 8)
+            signal["sl"]      = auto_sl
+            signal["sl_auto"] = True
+            signal["sl_pct"]  = sl_pct
+            logging.info(
+                f"⚠️  No SL in signal — auto SL: ${auto_sl:.6f} "
+                f"({sl_pct*100:.0f}% below ${bottom:.6f})"
+            )
 
         logging.info(
             f"📨 Signal: {signal['symbol']} {signal['direction']}  "
