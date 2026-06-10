@@ -519,6 +519,11 @@ async def main():
         signal = parse_signal(event.raw_text)
         if not signal:
             logging.warning("⚠️  Message not parsed as signal — skipped")
+            send_telegram(
+                f"⚠️ *Signal not recognized — review needed*\n\n"
+                f"{event.raw_text[:600]}\n\n"
+                f"_Submit manually with /signal if this is a trade._"
+            )
             return
 
         logging.info(
