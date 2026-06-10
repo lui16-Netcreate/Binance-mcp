@@ -30,10 +30,18 @@ from binance.exceptions import BinanceAPIException
 import binance_data
 
 load_dotenv()
+
+_LOG_DIR = Path(__file__).parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(_LOG_DIR / "trader.log", encoding="utf-8"),
+    ],
 )
 
 DRY_RUN                 = "--dry-run" in sys.argv
