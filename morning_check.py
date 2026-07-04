@@ -61,6 +61,34 @@ def is_running(script: str) -> bool:
     return process_count(script) > 0
 
 
+def _fetch_usdt_balance() -> float | None:
+    try:
+        import hmac
+        import hashlib
+        import time
+        api_key    = os.getenv("BINANCE_API_KEY", "")
+        api_secret = os.getenv("BINANCE_API_SECRET", "")
+        if not api_key or not api_secret:
+            return None
+        ts      = int(time.time() * 1000)
+        params  = f"timestamp={ts}"
+        sig     = hmac.new(api_secret.encode(), params.encode(), hashlib.sha256).hexdigest()
+        r = requests.get(
+            "https://api.binance.us/api/v3/account",
+            params={"timestamp": ts, "signature": sig},
+            headers={"X-MBX-APIKEY": api_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+        balances = r.json().get("balances", [])
+        for b in balances:
+            if b["asset"] == "USDT":
+                return float(b["free"])
+        return 0.0
+    except Exception:
+        return None
+
+
 def _fetch_price(symbol: str) -> float | None:
     try:
         r = requests.get(
@@ -111,10 +139,10 @@ def categorize_trades(trades: list[dict]) -> tuple[list, list]:
             except ValueError:
                 pass
 
-        signal  = trade["signal"]
-        result  = trade.get("result", {})
-        orders  = result.get("placed_orders", [])
-        symbol  = signal["symbol"]
+        signal    = trade["signal"]
+        result    = trade.get("result", {})
+        orders    = result.get("placed_orders", [])
+        symbol    = signal["symbol"]
         direction = signal.get("direction", "LONG")
 
         if not orders:
@@ -138,11 +166,13 @@ def categorize_trades(trades: list[dict]) -> tuple[list, list]:
         if filled and not trade.get("trade_closed"):
             avg_prices = [o["avg_fill_price"] for o in filled if o.get("avg_fill_price")]
             avg_entry  = sum(avg_prices) / len(avg_prices) if avg_prices else None
+            total_qty  = sum(o.get("filled_qty", 0) for o in filled)
             tp_hit     = trade.get("entries_cancelled", False)
             active.append({
                 "symbol":    symbol,
                 "direction": direction,
                 "avg_entry": avg_entry,
+                "total_qty": total_qty,
                 "n_filled":  len(filled),
                 "tp_hit":    tp_hit,
                 "sl":        sl,
@@ -186,10 +216,14 @@ def build_message(pending: list, active: list) -> str:
         if n == 1:   return "✅"
         return f"⚠️x{n}"
 
+    usdt_bal     = _fetch_usdt_balance()
+    balance_str  = f"`${usdt_bal:,.2f} USDT`" if usdt_bal is not None else "unavailable"
+
     lines = [
         "🌅 *TradingLuna* — 6:30 AM",
         "",
         f"{status(trader_n)} trader  {status(fill_n)} fill monitor  {status(dash_n)} dashboard",
+        f"💵 Available: {balance_str}",
     ]
 
     if not pending and not active:
@@ -213,9 +247,17 @@ def build_message(pending: list, active: list) -> str:
                 if a["avg_entry"]:
                     current = _fetch_price(a["symbol"])
                     if current:
+<<<<<<< HEAD
                         pct  = (current - a["avg_entry"]) / a["avg_entry"] * 100
                         sign = "+" if pct >= 0 else ""
                         pnl_str = f"  `{sign}{pct:.2f}%`"
+=======
+                        pct      = (current - a["avg_entry"]) / a["avg_entry"] * 100
+                        sign     = "+" if pct >= 0 else ""
+                        pnl_usdt = (current - a["avg_entry"]) * a.get("total_qty", 0)
+                        usdt_str = f" (`{sign}${abs(pnl_usdt):,.2f} USDT`)" if a.get("total_qty") else ""
+                        pnl_str  = f"  `{sign}{pct:.2f}%`{usdt_str}"
+>>>>>>> ac99242 (Add USDT P&L amount and available balance to morning check)
                 rsi     = _fetch_rsi(a["symbol"])
                 rsi_str = f"  RSI(14) 4h: `{rsi}` {_rsi_emoji(rsi)}" if rsi is not None else ""
                 sl_str  = f"\n    🛑 SL: `${a['sl']:,.4f}`" if a.get("sl") else ""
