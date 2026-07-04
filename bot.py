@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 
 TRADES_LOG      = Path(__file__).parent / "trades.json"
 PENDING_CONFIRM = Path(__file__).parent / "pending_confirm.json"
+OFFSET_FILE     = Path(__file__).parent / "bot_offset.json"
 
 INDICATOR_OPTIONS = [
     ("RSI Oversold",   "rsi_oversold"),
@@ -514,11 +515,19 @@ def main():
     logging.info("Bot started — listening for commands")
     send(f"🤖 *TradingLuna Bot* online\n\n{HELP}")
 
-    offset = 0
+    # Load saved offset so restarts don't reprocess old messages.
+    # If no saved offset, skip all pending updates by fast-forwarding to latest.
+    if OFFSET_FILE.exists():
+        offset = json.loads(OFFSET_FILE.read_text()).get("offset", 0)
+    else:
+        latest = get_updates(offset=-1)  # Telegram returns last update with offset=-1
+        offset = (latest[-1]["update_id"] + 1) if latest else 0
+        OFFSET_FILE.write_text(json.dumps({"offset": offset}))
     while True:
         updates = get_updates(offset)
         for update in updates:
             offset = update["update_id"] + 1
+            OFFSET_FILE.write_text(json.dumps({"offset": offset}))
 
             # Handle inline button taps
             if "callback_query" in update:
