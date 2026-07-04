@@ -247,17 +247,11 @@ def build_message(pending: list, active: list) -> str:
                 if a["avg_entry"]:
                     current = _fetch_price(a["symbol"])
                     if current:
-<<<<<<< HEAD
-                        pct  = (current - a["avg_entry"]) / a["avg_entry"] * 100
-                        sign = "+" if pct >= 0 else ""
-                        pnl_str = f"  `{sign}{pct:.2f}%`"
-=======
                         pct      = (current - a["avg_entry"]) / a["avg_entry"] * 100
                         sign     = "+" if pct >= 0 else ""
                         pnl_usdt = (current - a["avg_entry"]) * a.get("total_qty", 0)
                         usdt_str = f" (`{sign}${abs(pnl_usdt):,.2f} USDT`)" if a.get("total_qty") else ""
                         pnl_str  = f"  `{sign}{pct:.2f}%`{usdt_str}"
->>>>>>> ac99242 (Add USDT P&L amount and available balance to morning check)
                 rsi     = _fetch_rsi(a["symbol"])
                 rsi_str = f"  RSI(14) 4h: `{rsi}` {_rsi_emoji(rsi)}" if rsi is not None else ""
                 sl_str  = f"\n    🛑 SL: `${a['sl']:,.4f}`" if a.get("sl") else ""
