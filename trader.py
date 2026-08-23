@@ -193,10 +193,12 @@ def parse_signal(text: str) -> dict | None:
         mid     = round((top + bottom) / 2, 8)
         entries = [top, mid, bottom]
     else:
-        # Single-price signal: take the first number after the direction word
+        # Single-price signal: prefer the first number after the direction word
+        # (e.g. "...a LONG here 0.2082"), otherwise fall back to the first
+        # price-shaped number anywhere on the line (e.g. "I like 74,525 for a LIMIT LONG")
         dir_in_line = _DIR_RE.search(dir_line)
         after_dir   = dir_line[dir_in_line.end():] if dir_in_line else dir_line
-        single = re.search(rf"({_P})", after_dir)
+        single = re.search(rf"({_P})", after_dir) or re.search(rf"({_P})", dir_line)
         if not single:
             return None
         entries = [_p(single.group(1))]
