@@ -432,6 +432,25 @@ def handle_signal(raw_text: str, binance_client):
         )
         return
 
+    if signal["sl"] is None:
+        sl_pct_env = os.getenv("DEFAULT_SL_PCT")
+        if not sl_pct_env:
+            send(
+                f"⚠️ *{signal['symbol']} signal rejected — no SL found*\n"
+                f"_Add an `SL: ...` line, or set `DEFAULT_SL_PCT` in .env to auto-calculate one._"
+            )
+            return
+        sl_pct  = float(sl_pct_env)
+        bottom  = min(signal["entries"])
+        auto_sl = round(bottom * (1 - sl_pct), 8)
+        signal["sl"]      = auto_sl
+        signal["sl_auto"] = True
+        signal["sl_pct"]  = sl_pct
+        logging.info(
+            f"⚠️  /signal {signal['symbol']} had no SL — auto SL: ${auto_sl:.6f} "
+            f"({sl_pct*100:.0f}% below ${bottom:.6f})"
+        )
+
     note_line = f"\n📝 Note: _{notes}_" if notes else ""
     send(
         f"📨 *Parsed signal:* {signal['symbol']} {signal['direction']}\n"
