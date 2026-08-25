@@ -163,7 +163,7 @@ def handle_status():
     send(msg)
 
 
-def handle_pending():
+def handle_pending(binance_client=None):
     import json
     from pathlib import Path
     import requests as req
@@ -251,7 +251,49 @@ def handle_pending():
                 f"{price_str}{sl_line}{tp_str}"
             )
 
-    if not pending_lines and not active_lines:
+    # Cross-check against live open orders on Binance — a trade marked
+    # trade_closed can still leave TP/SL orders open on the exchange, and
+    # orders placed outside the bot are never in trades.json at all. Both
+    # cases are invisible to the trade-log scan above, so flag them separately.
+    known_order_closed = {}  # orderId(str) -> trade_closed(bool)
+    for trade in trades:
+        closed = bool(trade.get("trade_closed"))
+        for o in trade.get("result", {}).get("placed_orders", []):
+            oid = str(o.get("orderId", ""))
+            if oid and oid not in ("None", "DRY_RUN"):
+                known_order_closed[oid] = closed
+            for tp in o.get("tp_orders", []):
+                toid = str(tp.get("orderId", ""))
+                if toid and toid not in ("None", "DRY_RUN"):
+                    known_order_closed[toid] = closed
+            sl = o.get("sl_order") or {}
+            soid = str(sl.get("orderId", ""))
+            if soid and soid not in ("None", "DRY_RUN", "SOFTWARE_SL"):
+                known_order_closed[soid] = closed
+
+    orphan_lines = []
+    if binance_client:
+        try:
+            open_orders = binance_client.get_open_orders()
+        except Exception as e:
+            open_orders = []
+            logging.warning(f"/pending: could not fetch live open orders: {e}")
+        for o in open_orders:
+            oid    = str(o.get("orderId", ""))
+            closed = known_order_closed.get(oid)
+            if oid not in known_order_closed:
+                reason = "not in trade log"
+            elif closed:
+                reason = "trade marked closed but order still open"
+            else:
+                continue  # already covered by pending_lines/active_lines above
+            orphan_lines.append(
+                f"❓ *{o.get('symbol')} {o.get('side')}* {o.get('type')} — "
+                f"qty `{o.get('origQty')}` @ `${float(o.get('price', 0)):,.4f}`\n"
+                f"  orderId `{oid}` — _{reason}_"
+            )
+
+    if not pending_lines and not active_lines and not orphan_lines:
         send("📋 *Pending Trades* — No open or pending trades.")
         return
 
@@ -262,6 +304,10 @@ def handle_pending():
     if active_lines:
         msg += f"\n📈 *Active positions ({len(active_lines)}):*\n"
         msg += "\n".join(active_lines)
+    if orphan_lines:
+        msg += f"\n⚠️ *Untracked open orders on Binance ({len(orphan_lines)}):*\n"
+        msg += "\n".join(orphan_lines)
+        msg += "\n_Not part of any open tracked trade — verify and cancel on Binance if unwanted._"
 
     send(msg)
 
@@ -569,7 +615,7 @@ def main():
             if lower.startswith("/status"):
                 handle_status()
             elif lower.startswith("/pending"):
-                handle_pending()
+                handle_pending(binance_client)
             elif lower.startswith("/balance"):
                 handle_balance(binance_client)
             elif lower.startswith("/pnl"):
