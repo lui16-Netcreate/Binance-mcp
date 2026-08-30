@@ -312,6 +312,136 @@ def handle_pending(binance_client=None):
     send(msg)
 
 
+def handle_cancel(args: str, binance_client):
+    """Manually cancel open order(s) for a symbol.
+    Usage:
+      /cancel BTC              — list open orders for BTCUSDT
+      /cancel BTC <orderId>    — cancel one specific order
+      /cancel BTC ALL          — cancel every open order for BTCUSDT
+    """
+    import json
+    from pathlib import Path
+
+    parts = args.strip().split()
+    if not parts:
+        send(
+            "Usage:\n"
+            "`/cancel BTC` — list open orders\n"
+            "`/cancel BTC <orderId>` — cancel one order\n"
+            "`/cancel BTC ALL` — cancel every open order for that symbol"
+        )
+        return
+
+    raw_symbol = parts[0].upper().lstrip("$")
+    symbol     = raw_symbol if raw_symbol.endswith("USDT") else raw_symbol + "USDT"
+    target     = parts[1].upper() if len(parts) > 1 else None
+
+    trades_path = Path(__file__).parent / "trades.json"
+    trades = json.loads(trades_path.read_text()) if trades_path.exists() else []
+
+    # Collect every open order (tracked in the log) for this symbol
+    open_orders = []
+    for trade in trades:
+        if trade.get("trade_closed"):
+            continue
+        if trade.get("signal", {}).get("symbol") != symbol:
+            continue
+        for o in trade.get("result", {}).get("placed_orders", []):
+            oid = str(o.get("orderId", ""))
+            if oid and oid not in ("None", "DRY_RUN") and not o.get("filled_qty") \
+                    and o.get("binance_status") not in ("CANCELED", "CANCELLED_AFTER_TP"):
+                open_orders.append({"order": o, "field": "entry", "orderId": oid,
+                                     "side": "BUY", "price": o.get("price"), "qty": o.get("qty")})
+            for tp in o.get("tp_orders", []):
+                toid = str(tp.get("orderId", ""))
+                if toid and toid not in ("None", "DRY_RUN") and tp.get("status") not in ("FILLED", "CANCELED"):
+                    open_orders.append({"order": tp, "field": "TP", "orderId": toid,
+                                         "side": "SELL", "price": tp.get("price"), "qty": tp.get("qty")})
+            sl = o.get("sl_order") or {}
+            soid = str(sl.get("orderId", ""))
+            if soid and soid not in ("None", "DRY_RUN", "SOFTWARE_SL") and sl.get("status") not in ("FILLED", "CANCELED"):
+                open_orders.append({"order": sl, "field": "SL", "orderId": soid,
+                                     "side": "SELL", "price": sl.get("price"), "qty": sl.get("qty")})
+
+    if not target:
+        # ── List mode ──────────────────────────────────────────────────────
+        lines = [f"📋 *Open orders for {symbol}:*\n"]
+        for o in open_orders:
+            price = f"${o['price']:,.4f}" if o.get("price") else "?"
+            lines.append(f"  `{o['orderId']}`  {o['side']} {o['field']}  qty `{o['qty']}`  @ {price}")
+
+        tracked_ids = {o["orderId"] for o in open_orders}
+        if binance_client:
+            try:
+                for lo in binance_client.get_open_orders(symbol=symbol):
+                    loid = str(lo["orderId"])
+                    if loid not in tracked_ids:
+                        lines.append(f"  `{loid}`  {lo['side']} (untracked)  qty `{lo['origQty']}`  @ ${float(lo['price']):,.4f}")
+            except Exception as e:
+                logging.warning(f"/cancel list: could not fetch live orders for {symbol}: {e}")
+
+        if len(lines) == 1:
+            send(f"📋 No open orders found for {symbol}.")
+            return
+        lines.append(f"\nUse `/cancel {raw_symbol} <orderId>` to cancel one, or `/cancel {raw_symbol} ALL` to cancel everything.")
+        send("\n".join(lines))
+        return
+
+    # ── Cancel mode ───────────────────────────────────────────────────────────
+    if target == "ALL":
+        ids_to_cancel = [o["orderId"] for o in open_orders]
+        if binance_client:
+            try:
+                tracked_ids = set(ids_to_cancel)
+                for lo in binance_client.get_open_orders(symbol=symbol):
+                    loid = str(lo["orderId"])
+                    if loid not in tracked_ids:
+                        ids_to_cancel.append(loid)
+            except Exception as e:
+                logging.warning(f"/cancel ALL: could not fetch live orders for {symbol}: {e}")
+    else:
+        ids_to_cancel = [target]
+
+    if not ids_to_cancel:
+        send(f"📋 Nothing to cancel for {symbol}.")
+        return
+
+    canceled, failed = [], []
+    for oid in ids_to_cancel:
+        try:
+            if binance_client:
+                binance_client.cancel_order(symbol=symbol, orderId=int(oid))
+            canceled.append(oid)
+        except Exception as e:
+            msg = getattr(e, "message", str(e))
+            if "unknown order" in msg.lower() or "does not exist" in msg.lower():
+                canceled.append(oid)  # already gone — treat as success
+            else:
+                failed.append((oid, msg))
+
+    canceled_set = set(canceled)
+    changed = False
+    for o in open_orders:
+        if o["orderId"] in canceled_set:
+            if o["field"] == "entry":
+                o["order"]["binance_status"] = "CANCELED"
+                o["order"]["tp_sl_placed"]   = True
+            else:
+                o["order"]["status"]       = "CANCELED"
+                o["order"]["pnl_notified"] = True
+            changed = True
+
+    if changed:
+        trades_path.write_text(json.dumps(trades, indent=2))
+
+    lines = []
+    if canceled:
+        lines.append(f"✅ Cancelled {len(canceled)} order(s) for {symbol}: " + ", ".join(f"`{i}`" for i in canceled))
+    if failed:
+        lines.append("⚠️ Failed to cancel: " + ", ".join(f"`{i}` ({m})" for i, m in failed))
+    send("\n".join(lines) if lines else f"Nothing to cancel for {symbol}.")
+
+
 def handle_report(days: int = 7):
     from analyzer import load_trades, analyze
     from report import build_report
@@ -549,11 +679,16 @@ HELP = (
     "/report — last 7 days (Claude analysis)\n"
     "/balance — available USDT balance\n"
     "/pnl — your signals vs Telegram signals\n"
-    "/signal — submit your own trade\n\n"
+    "/signal — submit your own trade\n"
+    "/cancel — cancel open order(s) manually\n\n"
     "Signal format:\n"
     "`/signal $BTC LONG 95000 - 94000`\n"
     "`TP1: 96500 TP2: 97000`\n"
-    "`SL: 93500`"
+    "`SL: 93500`\n\n"
+    "Cancel format:\n"
+    "`/cancel BTC` — list open orders\n"
+    "`/cancel BTC <orderId>` — cancel one\n"
+    "`/cancel BTC ALL` — cancel all"
 )
 
 
@@ -616,6 +751,8 @@ def main():
                 handle_status()
             elif lower.startswith("/pending"):
                 handle_pending(binance_client)
+            elif lower.startswith("/cancel"):
+                handle_cancel(text[len("/cancel"):].strip(), binance_client)
             elif lower.startswith("/balance"):
                 handle_balance(binance_client)
             elif lower.startswith("/pnl"):
