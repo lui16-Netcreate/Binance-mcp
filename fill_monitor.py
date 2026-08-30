@@ -305,9 +305,13 @@ def check_fills(client: BinanceClient | None):
 
 # ── Exit fill monitor (TP + SL) with P&L tracking ────────────────────────────
 
-def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, signal: dict, sym_info: dict):
+def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, signal: dict, sym_info: dict,
+                      sibling_orders: list = None):
     """TP1 hit: cancel all remaining TPs + old SL, re-place TP2 for full remaining qty,
-    place new SL at TP1 price (breakeven protection). Acts as an OCO pair."""
+    place new SL at TP1 price (breakeven protection). Acts as an OCO pair.
+    Also cancels any still-unfilled sibling entry orders from the same multi-entry
+    range — once part of the position is being taken profit on, stop adding more
+    exposure to the rest of the range."""
     if entry.get("sl_trailed"):
         return
 
@@ -323,6 +327,24 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
     if remaining <= 0:
         entry["sl_trailed"] = True
         return
+
+    # Cancel any still-unfilled sibling entries from the same range (e.g. the $79k
+    # leg of an $80k/$79.5k/$79k range when only the top two fill and TP1 hits)
+    for sib in sibling_orders or []:
+        if sib is entry or sib.get("filled_qty"):
+            continue
+        if sib.get("binance_status") in ("CANCELED", "CANCELLED_AFTER_TP"):
+            continue
+        oid = sib.get("orderId")
+        if oid and str(oid) not in ("DRY_RUN", "", "None") and client:
+            try:
+                client.cancel_order(symbol=symbol, orderId=oid)
+                logging.info(f"❌ Cancelled unfilled sibling entry {oid} ({symbol}) — TP1 hit on range")
+            except BinanceAPIException as e:
+                logging.warning(f"Could not cancel sibling entry {oid}: {e.message}")
+                continue
+        sib["binance_status"] = "CANCELLED_AFTER_TP"
+        sib["tp_sl_placed"]   = True
 
     # Cancel all remaining TP orders (TP2, TP3, TP4) — we'll re-place TP2 with full remaining qty
     for i, tp in enumerate(tp_orders[1:], start=2):
@@ -553,7 +575,7 @@ def check_exit_fills(client: BinanceClient | None):
                 if idx == 1:
                     if sym_info is None and client:
                         sym_info = client.get_symbol_info(symbol)
-                    _trail_sl_to_tp1(client, symbol, entry, signal, sym_info or {})
+                    _trail_sl_to_tp1(client, symbol, entry, signal, sym_info or {}, sibling_orders=orders)
 
                 # TP2+ hit while SL was trailed → cancel the trail SL (OCO)
                 elif idx >= 2 and entry.get("sl_trailed"):
