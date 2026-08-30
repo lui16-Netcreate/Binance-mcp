@@ -329,14 +329,17 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
         if tp.get("status") in ("FILLED", "CANCELED"):
             continue
         oid = tp.get("orderId")
+        cancel_ok = True
         if oid and str(oid) not in ("DRY_RUN", "", "None") and client:
             try:
                 client.cancel_order(symbol=symbol, orderId=oid)
                 logging.info(f"❌ Cancelled TP{i} {oid} ({symbol})")
             except BinanceAPIException as e:
                 logging.warning(f"Could not cancel TP{i} {oid}: {e.message}")
-        tp["status"] = "CANCELED"
-        tp["pnl_notified"] = True
+                cancel_ok = False
+        if cancel_ok:
+            tp["status"] = "CANCELED"
+            tp["pnl_notified"] = True
 
     # Cancel old SL
     sl_oid = sl_order.get("orderId")
@@ -376,7 +379,10 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
         new_tp2 = {"price": tp2_rounded, "qty": remaining, "orderId": tp2_order_id,
                    "type": "TP", "pnl_notified": False}
         if len(tp_orders) >= 2:
-            tp_orders[1].update(new_tp2)
+            # Full replace, not update() — the old TP2 dict may carry a stale
+            # "status": "CANCELED" from the cancel loop above, which must not
+            # leak onto this freshly-placed order.
+            tp_orders[1] = new_tp2
         else:
             tp_orders.append(new_tp2)
 
