@@ -197,7 +197,7 @@ def handle_pending(binance_client=None):
         src     = trade.get("source", "telegram")
         src_tag = "✍️" if src == "manual" else "🤖"
 
-        skip = {"CANCELED", "CANCELLED_AFTER_TP"}
+        skip = {"CANCELED", "CANCELLED_AFTER_TP", "EXPIRED", "REJECTED"}
         live = [o for o in orders if o.get("binance_status") not in skip
                 and str(o.get("orderId", "")) not in ("", "DRY_RUN")]
         if not live:
@@ -349,7 +349,7 @@ def handle_cancel(args: str, binance_client):
         for o in trade.get("result", {}).get("placed_orders", []):
             oid = str(o.get("orderId", ""))
             if oid and oid not in ("None", "DRY_RUN") and not o.get("filled_qty") \
-                    and o.get("binance_status") not in ("CANCELED", "CANCELLED_AFTER_TP"):
+                    and o.get("binance_status") not in ("CANCELED", "CANCELLED_AFTER_TP", "EXPIRED", "REJECTED"):
                 open_orders.append({"order": o, "field": "entry", "orderId": oid,
                                      "side": "BUY", "price": o.get("price"), "qty": o.get("qty")})
             for tp in o.get("tp_orders", []):

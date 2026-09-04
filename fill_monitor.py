@@ -257,9 +257,9 @@ def check_fills(client: BinanceClient | None):
 
             order["binance_status"] = status_data["status"]
 
-            if status_data["status"] == "CANCELED":
-                order["tp_sl_placed"] = True  # skip — entry was canceled
-                logging.info(f"Order {order['orderId']} was CANCELED — skipping TP/SL")
+            if status_data["status"] in ("CANCELED", "EXPIRED", "REJECTED"):
+                order["tp_sl_placed"] = True  # skip — entry will never fill
+                logging.info(f"Order {order['orderId']} was {status_data['status']} — skipping TP/SL")
                 changed = True
                 continue
 
@@ -477,6 +477,15 @@ def _check_trade_closed(trade: dict):
 
     filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
     if not filled_entries:
+        # No entry ever filled — close the trade once every entry order has
+        # reached a terminal non-fill state (no more chance of filling), so
+        # it doesn't sit in limbo (never re-checked, never shown as resolved).
+        terminal = {"CANCELED", "CANCELLED_AFTER_TP", "EXPIRED", "REJECTED"}
+        if orders and all(o.get("binance_status") in terminal for o in orders) and not trade.get("trade_closed"):
+            trade["trade_closed"]   = True
+            trade["closed_at"]      = datetime.now(timezone.utc).isoformat()
+            trade["total_pnl_usdt"] = 0.0
+            logging.info(f"Trade closed (no fills — all entries terminal): {symbol}")
         return
 
     total_pnl  = 0.0
@@ -526,6 +535,11 @@ def check_exit_fills(client: BinanceClient | None):
 
         filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
         if not filled_entries:
+            # Give _check_trade_closed() a chance to close out a trade whose
+            # entries all expired/were cancelled without ever filling.
+            _check_trade_closed(trade)
+            if trade.get("trade_closed"):
+                changed = True
             continue
 
         any_new_tp_hit = False
