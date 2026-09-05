@@ -172,8 +172,12 @@ def build_fill_notification(signal: dict, order: dict, tp_sl: dict) -> str:
     sym    = signal["symbol"]
     prefix = "🔵 *[DRY RUN]* " if DRY_RUN else "✅ "
     msg    = f"{prefix}*{sym} entry filled!*\n\n"
-    filled_qty = order.get('filled_qty', order['qty'])
-    msg   += f"📥 Filled: `{filled_qty:.8f}` @ `${order.get('avg_fill_price', order['price']):,.4f}`\n\n"
+    filled_qty = order.get("combined_qty", order.get("filled_qty", order["qty"]))
+    avg_price  = order.get("combined_avg_price", order.get("avg_fill_price", order["price"]))
+    msg   += f"📥 Filled: `{filled_qty:.8f}` @ `${avg_price:,.4f}`\n\n"
+    members = order.get("combined_members")
+    if members and len(members) > 1:
+        msg += f"🔗 Consolidated across {len(members)} filled entries — one shared TP/SL for the combined position\n\n"
 
     if tp_sl.get("tp_orders"):
         tp_lines = "\n".join(
@@ -200,6 +204,90 @@ def build_fill_notification(signal: dict, order: dict, tp_sl: dict) -> str:
 
 # ── Main poll loop ────────────────────────────────────────────────────────────
 
+def _entry_qty(o: dict) -> float:
+    """Effective filled qty for an entry — its own fill, or the combined qty
+    it already absorbed from prior consolidation."""
+    return o.get("combined_qty", o.get("filled_qty", 0)) or 0
+
+
+def _entry_avg(o: dict) -> float:
+    """Effective avg fill price for an entry — its own fill, or the combined
+    avg price it already absorbed from prior consolidation."""
+    return o.get("combined_avg_price", o.get("avg_fill_price", 0)) or 0
+
+
+def _place_or_consolidate_tp_sl(client: BinanceClient | None, symbol: str, trade: dict, orders: list) -> bool:
+    """Place TP/SL for filled entries in this trade, consolidating multiple
+    still-untouched fills (no TP hit yet, SL not trailed) into ONE shared
+    TP/SL sized for their combined qty — instead of each entry independently
+    getting its own TP1/TP2 pair at its own (nearly-identical) fill price."""
+    signal = trade["signal"]
+
+    virgin = [
+        o for o in orders
+        if o.get("filled_qty") and not o.get("merged_into") and not o.get("sl_trailed")
+        and not any(tp.get("status") == "FILLED" for tp in o.get("tp_orders", []))
+    ]
+    if not virgin:
+        return False
+
+    pending_new = [o for o in virgin if not o.get("tp_sl_placed")]
+    if not pending_new:
+        return False  # already placed/consolidated, nothing new fired this cycle
+
+    # Cancel any existing TP orders on every virgin entry — replaced with one fresh set
+    for o in virgin:
+        for tp in o.get("tp_orders", []):
+            oid = tp.get("orderId")
+            if oid and str(oid) not in ("DRY_RUN", "", "None") and tp.get("status") not in ("FILLED", "CANCELED"):
+                if client:
+                    try:
+                        client.cancel_order(symbol=symbol, orderId=oid)
+                        logging.info(f"❌ Cancelled TP {oid} ({symbol}) — replacing with consolidated TP")
+                    except BinanceAPIException as e:
+                        logging.warning(f"Consolidate: could not cancel TP {oid}: {e.message}")
+        o["tp_orders"] = []
+
+    total_qty    = sum(_entry_qty(o) for o in virgin)
+    combined_avg = sum(_entry_qty(o) * _entry_avg(o) for o in virgin) / total_qty if total_qty else 0
+
+    primary = min(virgin, key=lambda o: o.get("orderId") or 0)
+    others  = [o for o in virgin if o is not primary]
+
+    for o in others:
+        o["merged_into"]  = primary["orderId"]
+        o["tp_sl_placed"] = True
+
+    existing_members = primary.get("combined_members") or [primary["orderId"]]
+    primary["combined_members"] = existing_members + [o["orderId"] for o in others]
+
+    tps       = signal["tps"]
+    tp_splits = None
+    if signal.get("tp_mode") == "auto_pct" and combined_avg > 0:
+        pcts      = signal.get("tp_pcts",   [0.05, 0.10, 0.15])
+        tp_splits = signal.get("tp_splits", [0.50, 0.25, 0.25])
+        tps = {f"tp{i+1}": round(combined_avg * (1 + p), 8) for i, p in enumerate(pcts)}
+        logging.info(
+            f"📐 Auto TPs from {combined_avg:.4f}: "
+            + "  ".join(f"TP{i+1}=${v:,.4f} (+{pcts[i]*100:.0f}%)" for i, v in enumerate(tps.values()))
+        )
+
+    sym_info = None if (DRY_RUN or client is None) else client.get_symbol_info(symbol)
+    tp_sl    = place_tp_sl(client, symbol, total_qty, tps, signal["sl"], sym_info or {},
+                           avg_fill_price=combined_avg, tp_splits=tp_splits)
+
+    primary["combined_qty"]       = total_qty
+    primary["combined_avg_price"] = round(combined_avg, 8)
+    primary["tp_orders"]          = tp_sl["tp_orders"]
+    primary["sl_order"]           = tp_sl["sl_order"]
+    primary["tp_sl_placed"]       = True
+
+    merged_note = f" (merged {len(virgin)} entries)" if len(virgin) > 1 else ""
+    logging.info(f"🎯 TP/SL placed for {symbol}{merged_note}: qty={total_qty} avg=${combined_avg:,.4f}")
+    send_telegram(build_fill_notification(signal, primary, tp_sl))
+    return True
+
+
 def check_fills(client: BinanceClient | None):
     trades  = load_trades()
     changed = False
@@ -210,6 +298,8 @@ def check_fills(client: BinanceClient | None):
         symbol = signal["symbol"]
 
         for order in result.get("placed_orders", []):
+            if order.get("merged_into"):
+                continue  # owned by the primary entry it was consolidated into
             if order.get("tp_sl_placed"):
                 # Skip only if TP/SL orders were actually placed successfully.
                 # If all order IDs are None (placement failed), fall through and retry.
@@ -266,38 +356,22 @@ def check_fills(client: BinanceClient | None):
             if status_data["status"] != "FILLED":
                 continue
 
-            # Entry filled — place TP and SL
+            # Entry filled — record the fill. TP/SL placement (possibly
+            # consolidated with sibling fills from the same trade) happens
+            # once per trade, below, after every order this cycle is checked.
             filled_qty = float(status_data["executedQty"])
             quote_qty  = float(status_data["cummulativeQuoteQty"])
             avg_price  = quote_qty / filled_qty if filled_qty > 0 else order["price"]
 
-            order["filled_qty"]      = filled_qty
-            order["avg_fill_price"]  = round(avg_price, 8)
-            order["filled_at"]       = datetime.now(timezone.utc).isoformat()
+            order["filled_qty"]     = filled_qty
+            order["avg_fill_price"] = round(avg_price, 8)
+            order["filled_at"]      = datetime.now(timezone.utc).isoformat()
 
             logging.info(f"✅ Fill detected: {filled_qty} {symbol} @ {avg_price:.4f}")
-
-            # Auto-calculate TP prices from avg fill price if tp_mode is auto_pct
-            tps       = signal["tps"]
-            tp_splits = None
-            if signal.get("tp_mode") == "auto_pct" and avg_price > 0:
-                pcts      = signal.get("tp_pcts",   [0.05, 0.10, 0.15])
-                tp_splits = signal.get("tp_splits", [0.50, 0.25, 0.25])
-                tps = {f"tp{i+1}": round(avg_price * (1 + p), 8) for i, p in enumerate(pcts)}
-                logging.info(
-                    f"📐 Auto TPs from {avg_price:.4f}: "
-                    + "  ".join(f"TP{i+1}=${v:,.4f} (+{pcts[i]*100:.0f}%)" for i, v in enumerate(tps.values()))
-                )
-
-            sym_info = None if (DRY_RUN or client is None) else client.get_symbol_info(symbol)
-            tp_sl    = place_tp_sl(client, symbol, filled_qty, tps, signal["sl"], sym_info or {}, avg_fill_price=avg_price, tp_splits=tp_splits)
-
-            order["tp_orders"]   = tp_sl["tp_orders"]
-            order["sl_order"]    = tp_sl["sl_order"]
-            order["tp_sl_placed"] = True
-
             changed = True
-            send_telegram(build_fill_notification(signal, order, tp_sl))
+
+        if _place_or_consolidate_tp_sl(client, symbol, trade, result.get("placed_orders", [])):
+            changed = True
 
     if changed:
         save_trades(trades)
@@ -320,7 +394,7 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
     tp_orders = entry.get("tp_orders", [])
     sl_order  = entry.get("sl_order", {})
 
-    total_filled = entry.get("filled_qty", 0)
+    total_filled = _entry_qty(entry)
     tp1_qty      = tp_orders[0].get("filled_qty", tp_orders[0].get("qty", 0)) if tp_orders else 0
     remaining    = _round_to(max(total_filled - tp1_qty, 0), lot_step)
 
@@ -475,7 +549,7 @@ def _check_trade_closed(trade: dict):
     orders  = result.get("placed_orders", [])
     symbol  = trade["signal"]["symbol"]
 
-    filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
+    filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty") and not o.get("merged_into")]
     if not filled_entries:
         # No entry ever filled — close the trade once every entry order has
         # reached a terminal non-fill state (no more chance of filling), so
@@ -533,7 +607,7 @@ def check_exit_fills(client: BinanceClient | None):
         symbol  = signal["symbol"]
         orders  = result.get("placed_orders", [])
 
-        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
+        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty") and not o.get("merged_into")]
         if not filled_entries:
             # Give _check_trade_closed() a chance to close out a trade whose
             # entries all expired/were cancelled without ever filling.
@@ -546,7 +620,7 @@ def check_exit_fills(client: BinanceClient | None):
         sym_info       = None  # lazy-loaded on first TP1 hit
 
         for entry in filled_entries:
-            entry_price = entry.get("avg_fill_price", 0)
+            entry_price = _entry_avg(entry)
 
             # ── Check each TP order ───────────────────────────────────────────
             for idx, tp in enumerate(entry.get("tp_orders", []), start=1):
@@ -687,7 +761,7 @@ def check_software_sl(client: BinanceClient | None):
         symbol  = signal["symbol"]
         orders  = result.get("placed_orders", [])
 
-        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty")]
+        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty") and not o.get("merged_into")]
         if not filled_entries:
             continue
 
@@ -725,7 +799,7 @@ def check_software_sl(client: BinanceClient | None):
                 tp["pnl_notified"] = True
 
             # Market-sell the remaining filled qty
-            remaining = entry.get("filled_qty", 0)
+            remaining = _entry_qty(entry)
             if remaining <= 0:
                 continue
 
@@ -734,7 +808,7 @@ def check_software_sl(client: BinanceClient | None):
             lot_step = _get_filter(sym_info or {}, "LOT_SIZE", "stepSize")
             sell_qty = _round_to(remaining, lot_step)
 
-            entry_price = entry.get("avg_fill_price", 0)
+            entry_price = _entry_avg(entry)
             pnl_usdt, pnl_pct = 0.0, 0.0
 
             if DRY_RUN or not client:

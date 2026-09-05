@@ -199,7 +199,8 @@ def handle_pending(binance_client=None):
 
         skip = {"CANCELED", "CANCELLED_AFTER_TP", "EXPIRED", "REJECTED"}
         live = [o for o in orders if o.get("binance_status") not in skip
-                and str(o.get("orderId", "")) not in ("", "DRY_RUN")]
+                and str(o.get("orderId", "")) not in ("", "DRY_RUN")
+                and not o.get("merged_into")]  # merged siblings' data lives on the primary now
         if not live:
             continue
 
@@ -210,7 +211,8 @@ def handle_pending(binance_client=None):
         price_str = f"  Current: `${now:,.4f}`\n" if now else ""
 
         if filled:
-            avg_prices = [o["avg_fill_price"] for o in filled if o.get("avg_fill_price")]
+            avg_prices = [o.get("combined_avg_price", o.get("avg_fill_price"))
+                          for o in filled if o.get("combined_avg_price") or o.get("avg_fill_price")]
             avg_entry  = sum(avg_prices) / len(avg_prices) if avg_prices else None
 
             unreal = ""
