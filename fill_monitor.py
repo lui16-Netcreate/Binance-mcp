@@ -39,6 +39,7 @@ POLL_INTERVAL = 60   # seconds between polls
 SL_SLIP     = 0.003  # 0.3% below SL price for the limit leg (ensures fill)
 TP_SPLIT    = [0.40, 0.30, 0.20, 0.10]
 SL_LOSS_PCT = float(os.getenv("SL_LOSS_PCT", "0.50"))  # max loss per order as fraction of order value
+BREAKEVEN_BUFFER_PCT = float(os.getenv("BREAKEVEN_BUFFER_PCT", "0.01"))  # SL trail target after TP1: entry price + this %
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -382,7 +383,8 @@ def check_fills(client: BinanceClient | None):
 def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, signal: dict, sym_info: dict,
                       sibling_orders: list = None):
     """TP1 hit: cancel all remaining TPs + old SL, re-place TP2 for full remaining qty,
-    place new SL at TP1 price (breakeven protection). Acts as an OCO pair.
+    place new SL at entry price + BREAKEVEN_BUFFER_PCT (small guaranteed profit,
+    not TP1's full gain). Acts as an OCO pair.
     Also cancels any still-unfilled sibling entry orders from the same multi-entry
     range — once part of the position is being taken profit on, stop adding more
     exposure to the rest of the range."""
@@ -450,7 +452,7 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
     tp2_price = tp_orders[1].get("price") if len(tp_orders) >= 2 else None
     if not tp2_price and signal.get("tp_mode") == "auto_pct":
         pcts     = signal.get("tp_pcts", [0.05, 0.10])
-        avg_fill = entry.get("avg_fill_price", 0)
+        avg_fill = _entry_avg(entry)
         if len(pcts) >= 2 and avg_fill:
             tp2_price = round(avg_fill * (1 + pcts[1]), 8)
 
@@ -482,10 +484,13 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
         else:
             tp_orders.append(new_tp2)
 
-    # Place new SL at TP1 price (breakeven)
-    tp1_price = tp_orders[0].get("price", 0) if tp_orders else 0
-    sl_stop   = _round_to(tp1_price, tick_size)
-    sl_limit  = _round_to(tp1_price * (1 - SL_SLIP), tick_size)
+    # Place new SL at entry price + BREAKEVEN_BUFFER_PCT — a small guaranteed
+    # profit rather than locking in all of TP1's gain, leaving the remaining
+    # qty room to ride toward TP2 without getting stopped on a pullback.
+    avg_entry       = _entry_avg(entry)
+    breakeven_price = avg_entry * (1 + BREAKEVEN_BUFFER_PCT)
+    sl_stop   = _round_to(breakeven_price, tick_size)
+    sl_limit  = _round_to(breakeven_price * (1 - SL_SLIP), tick_size)
     sl_oid_new = None
 
     if DRY_RUN or not client:
@@ -499,7 +504,8 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
                 timeInForce="GTC",
             )
             sl_oid_new = order["orderId"]
-            logging.info(f"🛡️ Trail SL: {remaining:.8f} {symbol} stop={sl_stop} limit={sl_limit}  (id={sl_oid_new})")
+            logging.info(f"🛡️ Trail SL: {remaining:.8f} {symbol} stop={sl_stop} limit={sl_limit} "
+                         f"(entry+{BREAKEVEN_BUFFER_PCT*100:.1f}%, id={sl_oid_new})")
         except BinanceAPIException as e:
             logging.error(f"Trail SL failed: {e.message}")
 
@@ -512,8 +518,8 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
     entry["sl_trailed"] = True
 
     send_telegram(
-        f"🛡️ *{symbol} TP1 hit — SL moved to breakeven*\n"
-        f"SL at TP1 price: `${sl_stop:,.4f}`\n"
+        f"🛡️ *{symbol} TP1 hit — SL moved to breakeven +{BREAKEVEN_BUFFER_PCT*100:.1f}%*\n"
+        f"SL: `${sl_stop:,.4f}` _(entry `${avg_entry:,.4f}` + {BREAKEVEN_BUFFER_PCT*100:.1f}%)_\n"
         f"Remaining `{remaining}` rides to TP2 @ `${tp2_rounded:,.4f}`"
     )
 
