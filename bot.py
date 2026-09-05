@@ -43,6 +43,7 @@ INDICATOR_OPTIONS = [
     ("Bollinger Band", "bb_squeeze"),
     ("Divergence",     "divergence"),
     ("Order Block",    "order_block"),
+    ("Volume Distribution", "volume_distribution"),
 ]
 
 PENDING_INDICATOR_STATE = Path(__file__).parent / "pending_indicator_state.json"
