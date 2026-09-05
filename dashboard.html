@@ -268,8 +268,12 @@
     <div class="value yellow" id="c-rsi">—</div>
   </div>
   <div class="card">
-    <div class="label">Avg Fear & Greed</div>
+    <div class="label">Avg Fear & Greed <span style="color:var(--muted);font-weight:400">(at signal time, historical)</span></div>
     <div class="value purple" id="c-fg">—</div>
+  </div>
+  <div class="card">
+    <div class="label">Fear & Greed <span style="color:var(--muted);font-weight:400">(live now)</span></div>
+    <div class="value yellow" id="c-fg-live">—</div>
   </div>
   <div class="card">
     <div class="label">With Errors</div>
@@ -638,8 +642,26 @@
     }
   }
 
+  async function loadFearGreedLive() {
+    try {
+      const r    = await fetch("/api/fear-greed");
+      const data = await r.json();
+      const el   = document.getElementById("c-fg-live");
+      if (data.error || data.value == null) {
+        el.textContent = "—";
+        return;
+      }
+      el.textContent = `${data.value}/100`;
+      el.title = data.classification;
+      el.className = "value " +
+        (data.value <= 44 ? "red" : data.value >= 56 ? "green" : "yellow");
+    } catch (e) {
+      console.warn("fear-greed fetch failed", e);
+    }
+  }
+
   async function refresh() {
-    await Promise.all([loadSummary(), loadTrades(), loadTopVolume()]);
+    await Promise.all([loadSummary(), loadTrades(), loadTopVolume(), loadFearGreedLive()]);
     document.getElementById("last-updated").textContent =
       "Updated " + new Date().toLocaleTimeString();
   }

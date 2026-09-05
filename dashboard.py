@@ -157,6 +157,14 @@ async def api_top_volume(_: None = Depends(require_auth)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/fear-greed")
+async def api_fear_greed(_: None = Depends(require_auth)):
+    try:
+        return JSONResponse(binance_data.get_fear_greed())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
     print(f"Dashboard → http://localhost:{port}")
