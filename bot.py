@@ -6,6 +6,7 @@ Commands:
   /report      — weekly P&L summary via Claude analysis
   /report30    — last 30 days
   /pnl         — side-by-side P&L: your signals vs Telegram signals
+  /news [SYM]  — latest crypto headlines (free RSS feeds), optionally filtered to a symbol
   /signal ...  — submit your own trade signal for execution
 
   /signal format (same as the Telegram signal group):
@@ -558,6 +559,36 @@ def handle_balance(binance_client):
         send(f"⚠️ Could not fetch balance: `{e}`")
 
 
+def handle_news(args: str):
+    """Show latest crypto headlines, optionally filtered to a symbol.
+    Usage: /news  or  /news BTC"""
+    import binance_data
+    symbol = args.strip().upper().lstrip("$") or "BTC"
+    try:
+        data = binance_data.get_latest_headlines(symbol)
+    except Exception as e:
+        send(f"⚠️ Could not fetch news: `{e}`")
+        return
+
+    headlines = data["headlines"]
+    if not headlines:
+        send(f"📰 No headlines found for {data['symbol']}.")
+        return
+
+    def _sanitize(text: str) -> str:
+        # Strip Telegram legacy-Markdown special chars so a headline containing
+        # them (common in real news titles) can't silently break message send
+        return text.replace("*", "").replace("_", "").replace("`", "").replace("[", "(").replace("]", ")")
+
+    scope = f"mentioning *{data['symbol']}*" if data["filtered"] else "_(no direct mentions — showing general top headlines)_"
+    lines = [f"📰 *Latest crypto headlines* {scope}\n"]
+    for h in headlines:
+        lines.append(f"• [{h['source']}] {_sanitize(h['title'])}")
+    if data.get("errors"):
+        lines.append(f"\n_Some feeds failed: {'; '.join(data['errors'])}_")
+    send("\n".join(lines))
+
+
 def handle_pnl():
     """Side-by-side P&L breakdown: Telegram signals vs your manual signals."""
     from analyzer import load_trades
@@ -682,6 +713,7 @@ HELP = (
     "/report — last 7 days (Claude analysis)\n"
     "/balance — available USDT balance\n"
     "/pnl — your signals vs Telegram signals\n"
+    "/news [SYMBOL] — latest crypto headlines\n"
     "/signal — submit your own trade\n"
     "/cancel — cancel open order(s) manually\n\n"
     "Signal format:\n"
@@ -756,6 +788,8 @@ def main():
                 handle_pending(binance_client)
             elif lower.startswith("/cancel"):
                 handle_cancel(text[len("/cancel"):].strip(), binance_client)
+            elif lower.startswith("/news"):
+                handle_news(text[len("/news"):].strip())
             elif lower.startswith("/balance"):
                 handle_balance(binance_client)
             elif lower.startswith("/pnl"):

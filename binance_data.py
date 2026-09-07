@@ -1,10 +1,24 @@
 """
 Binance public API helpers — no API key required.
 """
+import re
 import requests
+import xml.etree.ElementTree as ET
 
 BASE  = "https://api.binance.us/api/v3"
 FAPI  = "https://fapi.binance.com"        # Binance global futures — public endpoints, no key needed
+
+NEWS_FEEDS = {
+    "Cointelegraph": "https://cointelegraph.com/rss",
+    "Decrypt":       "https://decrypt.co/feed",
+    "CoinDesk":      "https://www.coindesk.com/arc/outboundfeeds/rss/",
+}
+
+_COIN_NAMES = {
+    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "ripple",
+    "ADA": "cardano", "DOGE": "dogecoin", "AVAX": "avalanche", "LINK": "chainlink",
+    "DOT": "polkadot", "MATIC": "polygon", "LTC": "litecoin", "BNB": "bnb",
+}
 
 
 def get_price(symbol: str) -> dict:
@@ -187,24 +201,49 @@ def get_open_interest(symbol: str = "BTCUSDT") -> dict:
     }
 
 
-def get_news_sentiment(symbol: str = "BTC") -> dict:
-    """Fetch latest crypto news sentiment from CryptoPanic (no API key for basic feed)."""
-    base = symbol.upper().replace("USDT", "")
-    r = requests.get(
-        "https://cryptopanic.com/api/free/v1/posts/",
-        params={"auth_token": "free", "currencies": base, "filter": "hot"},
-        timeout=10,
-    )
+def _fetch_rss(url: str, source: str, limit: int = 15) -> list:
+    r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
     r.raise_for_status()
-    results = r.json().get("results", [])[:10]
-    bullish = sum(1 for p in results if p.get("votes", {}).get("positive", 0) > p.get("votes", {}).get("negative", 0))
-    bearish = len(results) - bullish
+    root = ET.fromstring(r.content)
+    items = []
+    for item in root.findall(".//item")[:limit]:
+        title = (item.findtext("title") or "").strip()
+        if not title:
+            continue
+        items.append({
+            "title":     title,
+            "link":      (item.findtext("link") or "").strip(),
+            "published": (item.findtext("pubDate") or "").strip(),
+            "source":    source,
+        })
+    return items
+
+
+def get_latest_headlines(symbol: str = "BTC", limit: int = 5) -> dict:
+    """Fetch latest crypto headlines from free RSS feeds (CryptoPanic's free API
+    was discontinued). Filters to headlines mentioning the given coin by ticker
+    or common name; falls back to general top headlines if nothing matches."""
+    base = symbol.upper().replace("USDT", "")
+
+    all_items, errors = [], []
+    for source, url in NEWS_FEEDS.items():
+        try:
+            all_items.extend(_fetch_rss(url, source))
+        except Exception as e:
+            errors.append(f"{source}: {e}")
+
+    coin_name = _COIN_NAMES.get(base, "")
+    keywords  = {base.lower()} | ({coin_name} if coin_name else set())
+    matched   = [
+        a for a in all_items
+        if any(re.search(rf"\b{re.escape(kw)}\b", a["title"], re.IGNORECASE) for kw in keywords)
+    ]
+
     return {
-        "symbol": base,
-        "articles_checked": len(results),
-        "bullish_articles": bullish,
-        "bearish_articles": bearish,
-        "sentiment": "bullish" if bullish > bearish else "bearish" if bearish > bullish else "neutral",
+        "symbol":    base,
+        "filtered":  bool(matched),
+        "headlines": (matched or all_items)[:limit],
+        "errors":    errors or None,
     }
 
 
@@ -234,9 +273,9 @@ def get_full_sentiment(symbol: str = "BTCUSDT") -> dict:
 
     try:
         base = symbol.upper().replace("USDT", "")
-        result["news_sentiment"] = get_news_sentiment(base)
+        result["news_headlines"] = get_latest_headlines(base)
     except Exception as e:
-        result["news_sentiment"] = {"error": str(e)}
+        result["news_headlines"] = {"error": str(e)}
 
     return result
 

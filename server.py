@@ -162,17 +162,20 @@ def get_open_interest(symbol: str = "BTCUSDT") -> str:
 
 
 @mcp.tool()
-def get_news_sentiment(symbol: str = "BTC") -> str:
-    """Get news sentiment for a crypto asset from CryptoPanic (bullish/bearish/neutral)."""
+def get_crypto_news(symbol: str = "BTC") -> str:
+    """Get the latest crypto headlines for an asset (from free RSS feeds — CryptoPanic's
+    free API was discontinued). Read the headlines yourself to judge sentiment."""
     try:
-        data = binance.get_news_sentiment(symbol)
-        return (
-            f"{data['symbol']} news sentiment: {data['sentiment'].upper()} "
-            f"({data['bullish_articles']} bullish / {data['bearish_articles']} bearish "
-            f"out of {data['articles_checked']} articles)"
-        )
+        data = binance.get_latest_headlines(symbol)
+        headlines = data["headlines"]
+        if not headlines:
+            return f"No headlines found for {data['symbol']}."
+        scope = f"mentioning {data['symbol']}" if data["filtered"] else "general top crypto headlines (none mentioned the symbol directly)"
+        lines = [f"Latest headlines — {scope}:"]
+        lines += [f"- [{h['source']}] {h['title']}" for h in headlines]
+        return "\n".join(lines)
     except Exception as e:
-        return f"Error fetching news sentiment for {symbol}: {e}"
+        return f"Error fetching news for {symbol}: {e}"
 
 
 @mcp.tool()
