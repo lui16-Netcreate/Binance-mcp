@@ -559,9 +559,47 @@ def handle_balance(binance_client):
         send(f"⚠️ Could not fetch balance: `{e}`")
 
 
+def _sanitize_for_telegram(text: str) -> str:
+    # Strip Telegram legacy-Markdown special chars so text containing them
+    # (common in real news titles / free-form model output) can't silently
+    # break message send (send() doesn't check the Telegram API response)
+    return text.replace("*", "").replace("_", "").replace("`", "").replace("[", "(").replace("]", ")")
+
+
+def _get_headline_read(headlines: list, symbol: str) -> str | None:
+    """Ask Claude for a brief bullish/bearish read on these headlines. Returns
+    None (rather than raising) on any failure so /news still sends the raw
+    headlines even if the read fails or ANTHROPIC_API_KEY is missing."""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        headline_text = "\n".join(f"- [{h['source']}] {h['title']}" for h in headlines)
+        response = client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=300,
+            system=(
+                "You are a crypto market analyst. Given a list of recent headlines, give a "
+                "short, direct read: an overall bullish/bearish/neutral lean, and 1-2 sentences "
+                "of why, referencing which headline(s) drove the read. No hedging disclaimers, "
+                "no generic caveats, no 'not financial advice' — just the read. Under 80 words."
+            ),
+            messages=[{
+                "role": "user",
+                "content": f"Headlines about {symbol}:\n{headline_text}\n\nWhat's your read?",
+            }],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logging.warning(f"Claude headline read failed: {e}")
+        return None
+
+
 def handle_news(args: str):
-    """Show latest crypto headlines, optionally filtered to a symbol.
-    Usage: /news  or  /news BTC"""
+    """Show latest crypto headlines + a generated bullish/bearish read,
+    optionally filtered to a symbol. Usage: /news  or  /news BTC"""
     import binance_data
     symbol = args.strip().upper().lstrip("$") or "BTC"
     try:
@@ -575,17 +613,18 @@ def handle_news(args: str):
         send(f"📰 No headlines found for {data['symbol']}.")
         return
 
-    def _sanitize(text: str) -> str:
-        # Strip Telegram legacy-Markdown special chars so a headline containing
-        # them (common in real news titles) can't silently break message send
-        return text.replace("*", "").replace("_", "").replace("`", "").replace("[", "(").replace("]", ")")
-
+    _sanitize = _sanitize_for_telegram
     scope = f"mentioning *{data['symbol']}*" if data["filtered"] else "_(no direct mentions — showing general top headlines)_"
     lines = [f"📰 *Latest crypto headlines* {scope}\n"]
     for h in headlines:
         lines.append(f"• [{h['source']}] {_sanitize(h['title'])}")
     if data.get("errors"):
         lines.append(f"\n_Some feeds failed: {'; '.join(data['errors'])}_")
+
+    read = _get_headline_read(headlines, data["symbol"])
+    if read:
+        lines.append(f"\n🧠 *My read:* {_sanitize(read)}")
+
     send("\n".join(lines))
 
 
