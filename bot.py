@@ -185,6 +185,7 @@ def handle_pending(binance_client=None):
 
     pending_lines = []
     active_lines  = []
+    exit_symbols  = []   # LONG active positions eligible for a manual market exit
 
     for trade in trades:
         if trade.get("trade_closed"):
@@ -242,6 +243,8 @@ def handle_pending(binance_client=None):
                 f"{src_tag} *{symbol} {dir_}* — avg entry {entry_str}\n"
                 f"{price_str}{unreal}{sl_line}{tp_str}{trail}"
             )
+            if dir_ == "LONG" and binance_client and symbol not in exit_symbols:
+                exit_symbols.append(symbol)
 
         elif unfilled:
             prices = sorted(set(o["price"] for o in unfilled))
@@ -313,7 +316,107 @@ def handle_pending(binance_client=None):
         msg += "\n".join(orphan_lines)
         msg += "\n_Not part of any open tracked trade — verify and cancel on Binance if unwanted._"
 
-    send(msg)
+    if exit_symbols:
+        keyboard = {"inline_keyboard": [
+            [{"text": f"🚪 Exit {s} now", "callback_data": f"exit_ask_{s}"}] for s in exit_symbols
+        ]}
+        send_with_keyboard(msg, keyboard)
+    else:
+        send(msg)
+
+
+def _market_exit_symbol(symbol: str, binance_client) -> tuple[str | None, str | None]:
+    """Cancel all open TP/SL orders and market-sell the entire remaining
+    position for every open (non-closed) trade on this symbol. Returns
+    (confirmation_message, None) on success or (None, error_message)."""
+    if not binance_client:
+        return None, "No Binance connection available."
+
+    from datetime import datetime, timezone
+    from binance.exceptions import BinanceAPIException
+    from fill_monitor import (_get_filter, _round_to, _fmt, _entry_qty, _entry_avg,
+                               _avg_fill_price_from_status, _calc_pnl)
+
+    trades  = json.loads(TRADES_LOG.read_text()) if TRADES_LOG.exists() else []
+    results = []
+    changed = False
+
+    for trade in trades:
+        if trade.get("trade_closed"):
+            continue
+        if trade.get("signal", {}).get("symbol") != symbol:
+            continue
+
+        entries = [o for o in trade.get("result", {}).get("placed_orders", [])
+                   if o.get("filled_qty") and not o.get("merged_into")]
+
+        for entry in entries:
+            qty = _entry_qty(entry)
+            if qty <= 0:
+                continue
+            entry_price = _entry_avg(entry)
+
+            for tp in entry.get("tp_orders", []):
+                if tp.get("status") in ("FILLED", "CANCELED"):
+                    continue
+                toid = tp.get("orderId")
+                if toid and str(toid) not in ("DRY_RUN", "", "None"):
+                    try:
+                        binance_client.cancel_order(symbol=symbol, orderId=toid)
+                    except BinanceAPIException as e:
+                        logging.warning(f"Manual exit: could not cancel TP {toid}: {e.message}")
+                tp["status"]       = "CANCELED"
+                tp["pnl_notified"] = True
+
+            sl     = entry.get("sl_order") or {}
+            sl_oid = sl.get("orderId")
+            if sl_oid and str(sl_oid) not in ("DRY_RUN", "", "None", "SOFTWARE_SL") and not sl.get("status"):
+                try:
+                    binance_client.cancel_order(symbol=symbol, orderId=sl_oid)
+                except BinanceAPIException as e:
+                    logging.warning(f"Manual exit: could not cancel SL {sl_oid}: {e.message}")
+
+            try:
+                sym_info = binance_client.get_symbol_info(symbol)
+                lot_step = _get_filter(sym_info, "LOT_SIZE", "stepSize")
+                sell_qty = _round_to(qty, lot_step)
+                order    = binance_client.order_market_sell(symbol=symbol, quantity=_fmt(sell_qty))
+            except BinanceAPIException as e:
+                logging.error(f"Manual exit market sell failed for {symbol}: {e.message}")
+                results.append(f"⚠️ {symbol}: market sell failed — `{e.message}`")
+                changed = True
+                continue
+
+            avg_price, fill_qty = _avg_fill_price_from_status(order, entry_price)
+            pnl_usdt, pnl_pct   = _calc_pnl(entry_price, avg_price, fill_qty)
+
+            entry["sl_order"] = {
+                "orderId": order["orderId"], "status": "FILLED",
+                "avg_fill_price": round(avg_price, 8), "filled_qty": fill_qty,
+                "pnl_usdt": pnl_usdt, "pnl_pct": pnl_pct, "pnl_notified": True,
+                "manual_exit": True,
+            }
+
+            tp_pnl = sum(tp.get("pnl_usdt", 0) for tp in entry.get("tp_orders", []) if tp.get("status") == "FILLED")
+            trade["trade_closed"]   = True
+            trade["closed_at"]      = datetime.now(timezone.utc).isoformat()
+            trade["total_pnl_usdt"] = round(tp_pnl + pnl_usdt, 4)
+            changed = True
+
+            sign = "+" if pnl_usdt >= 0 else ""
+            results.append(
+                f"🚪 *{symbol} exited at market*\n"
+                f"Sold `{fill_qty}` @ `${avg_price:,.4f}`\n"
+                f"Entry: `${entry_price:,.4f}`\n"
+                f"P&L: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
+            )
+
+    if changed:
+        TRADES_LOG.write_text(json.dumps(trades, indent=2))
+
+    if not results:
+        return None, f"No open {symbol} position found (already closed?)."
+    return "\n\n".join(results), None
 
 
 def handle_cancel(args: str, binance_client):
@@ -546,6 +649,37 @@ def handle_callback(callback_query: dict, binance_client):
         cq_msg_id = callback_query.get("message", {}).get("message_id")
         if cq_msg_id:
             edit_message_text(cq_msg_id, "📊 No confluence recorded.")
+
+    elif data.startswith("exit_ask_"):
+        symbol = data[len("exit_ask_"):]
+        answer_callback(cq_id)
+        send_with_keyboard(
+            f"⚠️ *Confirm exit {symbol} at market?*\n"
+            f"This cancels all open TP orders and sells your entire remaining position immediately.",
+            {"inline_keyboard": [[
+                {"text": "✅ Confirm Exit", "callback_data": f"exit_do_{symbol}"},
+                {"text": "❌ Cancel",       "callback_data": "exit_cancel"},
+            ]]},
+        )
+
+    elif data.startswith("exit_do_"):
+        symbol    = data[len("exit_do_"):]
+        cq_msg_id = callback_query.get("message", {}).get("message_id")
+        answer_callback(cq_id, "Exiting...")
+        if cq_msg_id:
+            edit_message_text(cq_msg_id, f"⏳ Exiting {symbol} at market...")
+        msg, err = _market_exit_symbol(symbol, binance_client)
+        result_text = msg or f"⚠️ {err}"
+        if cq_msg_id:
+            edit_message_text(cq_msg_id, result_text)
+        else:
+            send(result_text)
+
+    elif data == "exit_cancel":
+        answer_callback(cq_id, "Cancelled.")
+        cq_msg_id = callback_query.get("message", {}).get("message_id")
+        if cq_msg_id:
+            edit_message_text(cq_msg_id, "❌ Exit cancelled.")
 
 
 def handle_balance(binance_client):
