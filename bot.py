@@ -527,16 +527,17 @@ def handle_callback(callback_query: dict, binance_client):
         if len(indicators) < 2:
             answer_callback(cq_id, "Select at least 2 indicators before saving.")
             return
-        PENDING_INDICATOR_STATE.unlink()
         try:
             save_manual_confluences(state["symbol"], indicators, source=state.get("source", "manual"))
-            labels = [lbl for lbl, key in INDICATOR_OPTIONS if key in state["selected"]]
-            answer_callback(cq_id, "Saved!")
-            if state.get("message_id"):
-                edit_message_text(state["message_id"], f"📊 *Confluence saved for {state['symbol']}:*\n" + ", ".join(labels))
         except Exception as e:
             logging.warning(f"save_manual_confluences failed: {e}")
-            answer_callback(cq_id, "Save failed.")
+            answer_callback(cq_id, "Save failed — tap Save to retry.")
+            return  # keep the pending state so the user can retry
+        PENDING_INDICATOR_STATE.unlink()
+        labels = [lbl for lbl, key in INDICATOR_OPTIONS if key in state["selected"]]
+        answer_callback(cq_id, "Saved!")
+        if state.get("message_id"):
+            edit_message_text(state["message_id"], f"📊 *Confluence saved for {state['symbol']}:*\n" + ", ".join(labels))
 
     elif data == "ind_skip":
         if PENDING_INDICATOR_STATE.exists():
