@@ -45,6 +45,7 @@ INDICATOR_OPTIONS = [
     ("Divergence",     "divergence"),
     ("Order Block",    "order_block"),
     ("Volume Distribution", "volume_distribution"),
+    ("EMA-200",         "ema_200"),
 ]
 
 PENDING_INDICATOR_STATE = Path(__file__).parent / "pending_indicator_state.json"
