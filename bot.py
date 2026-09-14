@@ -184,9 +184,10 @@ def handle_pending(binance_client=None):
     trades_path = Path(__file__).parent / "trades.json"
     trades = json.loads(trades_path.read_text()) if trades_path.exists() else []
 
-    pending_lines = []
-    active_lines  = []
-    exit_symbols  = []   # LONG active positions eligible for a manual market exit
+    pending_lines  = []
+    active_lines   = []
+    exit_symbols   = []   # LONG active positions eligible for a manual market exit
+    cancel_symbols = []   # trades with unfilled entries eligible for a manual cancel-all
 
     for trade in trades:
         if trade.get("trade_closed"):
@@ -258,6 +259,8 @@ def handle_pending(binance_client=None):
                 f"{src_tag} *{symbol} {dir_}* — {len(unfilled)} orders @ {prices_str}\n"
                 f"{price_str}{sl_line}{tp_str}"
             )
+            if binance_client and symbol not in cancel_symbols:
+                cancel_symbols.append(symbol)
 
     # Cross-check against live open orders on Binance — a trade marked
     # trade_closed can still leave TP/SL orders open on the exchange, and
@@ -317,11 +320,11 @@ def handle_pending(binance_client=None):
         msg += "\n".join(orphan_lines)
         msg += "\n_Not part of any open tracked trade — verify and cancel on Binance if unwanted._"
 
-    if exit_symbols:
-        keyboard = {"inline_keyboard": [
-            [{"text": f"🚪 Exit {s} now", "callback_data": f"exit_ask_{s}"}] for s in exit_symbols
-        ]}
-        send_with_keyboard(msg, keyboard)
+    rows = [[{"text": f"🚪 Exit {s} now", "callback_data": f"exit_ask_{s}"}] for s in exit_symbols]
+    rows += [[{"text": f"🗑 Cancel {s} pending", "callback_data": f"cancelpending_ask_{s}"}] for s in cancel_symbols]
+
+    if rows:
+        send_with_keyboard(msg, {"inline_keyboard": rows})
     else:
         send(msg)
 
@@ -659,7 +662,7 @@ def handle_callback(callback_query: dict, binance_client):
             f"This cancels all open TP orders and sells your entire remaining position immediately.",
             {"inline_keyboard": [[
                 {"text": "✅ Confirm Exit", "callback_data": f"exit_do_{symbol}"},
-                {"text": "❌ Cancel",       "callback_data": "exit_cancel"},
+                {"text": "❌ Cancel",       "callback_data": "noop_cancel"},
             ]]},
         )
 
@@ -676,11 +679,31 @@ def handle_callback(callback_query: dict, binance_client):
         else:
             send(result_text)
 
-    elif data == "exit_cancel":
+    elif data.startswith("cancelpending_ask_"):
+        symbol = data[len("cancelpending_ask_"):]
+        answer_callback(cq_id)
+        send_with_keyboard(
+            f"⚠️ *Confirm cancel all pending {symbol} entries?*\n"
+            f"This cancels every unfilled order for this trade — none of them will get a chance to fill.",
+            {"inline_keyboard": [[
+                {"text": "✅ Confirm Cancel", "callback_data": f"cancelpending_do_{symbol}"},
+                {"text": "❌ Keep it",        "callback_data": "noop_cancel"},
+            ]]},
+        )
+
+    elif data.startswith("cancelpending_do_"):
+        symbol    = data[len("cancelpending_do_"):]
+        cq_msg_id = callback_query.get("message", {}).get("message_id")
+        answer_callback(cq_id, "Cancelling...")
+        if cq_msg_id:
+            edit_message_text(cq_msg_id, f"⏳ Cancelling {symbol} pending orders...")
+        handle_cancel(f"{symbol} ALL", binance_client)
+
+    elif data == "noop_cancel":
         answer_callback(cq_id, "Cancelled.")
         cq_msg_id = callback_query.get("message", {}).get("message_id")
         if cq_msg_id:
-            edit_message_text(cq_msg_id, "❌ Exit cancelled.")
+            edit_message_text(cq_msg_id, "❌ Cancelled — no action taken.")
 
 
 def handle_balance(binance_client):
