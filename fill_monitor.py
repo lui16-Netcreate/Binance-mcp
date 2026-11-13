@@ -4,7 +4,7 @@ Phase 3.5 — Fill Monitor
 Polls Binance US every 60 seconds for filled entry orders.
 When a buy order fills, automatically places:
   - 4 limit SELL orders at TP1/2/3/4 (40 / 30 / 20 / 10% split)
-  - 1 STOP_LOSS_LIMIT sell at SL price
+  - a software SL (price polled every 60s; trails to entry+1% after TP1)
 
 Updates trades.json with fill status and TP/SL order IDs.
 Sends Telegram notification on each fill.
@@ -36,7 +36,6 @@ logging.basicConfig(
 DRY_RUN       = "--dry-run" in sys.argv
 TRADES_LOG    = Path(__file__).parent / "trades.json"
 POLL_INTERVAL = 60   # seconds between polls
-SL_SLIP     = 0.003  # 0.3% below SL price for the limit leg (ensures fill)
 TP_SPLIT    = [0.40, 0.30, 0.20, 0.10]
 SL_LOSS_PCT = float(os.getenv("SL_LOSS_PCT", "0.50"))  # max loss per order as fraction of order value
 BREAKEVEN_BUFFER_PCT = float(os.getenv("BREAKEVEN_BUFFER_PCT", "0.01"))  # SL trail target after TP1: entry price + this %
@@ -454,7 +453,7 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
 
     # Cancel old SL
     sl_oid = sl_order.get("orderId")
-    if sl_oid and str(sl_oid) not in ("DRY_RUN", "", "None") and not sl_order.get("status") and client:
+    if sl_oid and str(sl_oid) not in ("DRY_RUN", "", "None", "SOFTWARE_SL") and not sl_order.get("status") and client:
         try:
             client.cancel_order(symbol=symbol, orderId=sl_oid)
             logging.info(f"❌ Cancelled old SL {sl_oid} ({symbol})")
@@ -497,36 +496,22 @@ def _trail_sl_to_tp1(client: BinanceClient | None, symbol: str, entry: dict, sig
         else:
             tp_orders.append(new_tp2)
 
-    # Place new SL at entry price + BREAKEVEN_BUFFER_PCT — a small guaranteed
+    # Move the SL to entry price + BREAKEVEN_BUFFER_PCT — a small guaranteed
     # profit rather than locking in all of TP1's gain, leaving the remaining
     # qty room to ride toward TP2 without getting stopped on a pullback.
+    # Software SL, not a resting STOP_LOSS_LIMIT: the revised TP2 above already
+    # locks the full remaining qty, so Binance spot rejects a second sell order
+    # for it ("insufficient balance") — check_software_sl() watches this level.
     avg_entry       = _entry_avg(entry)
     breakeven_price = avg_entry * (1 + BREAKEVEN_BUFFER_PCT)
-    sl_stop   = _round_to(breakeven_price, tick_size)
-    sl_limit  = _round_to(breakeven_price * (1 - SL_SLIP), tick_size)
-    sl_oid_new = None
+    sl_stop         = _round_to(breakeven_price, tick_size)
+    logging.info(f"🛡️ Trail SL: {remaining:.8f} {symbol} @ {sl_stop} "
+                 f"(entry+{BREAKEVEN_BUFFER_PCT*100:.1f}%, software)")
 
-    if DRY_RUN or not client:
-        sl_oid_new = "DRY_RUN"
-        logging.info(f"[DRY-RUN] STOP_LOSS_LIMIT  {remaining} {symbol} stop={sl_stop} limit={sl_limit}  (trail SL)")
-    else:
-        try:
-            order = client.create_order(
-                symbol=symbol, side="SELL", type="STOP_LOSS_LIMIT",
-                quantity=_fmt(remaining), price=_fmt(sl_limit), stopPrice=_fmt(sl_stop),
-                timeInForce="GTC",
-            )
-            sl_oid_new = order["orderId"]
-            logging.info(f"🛡️ Trail SL: {remaining:.8f} {symbol} stop={sl_stop} limit={sl_limit} "
-                         f"(entry+{BREAKEVEN_BUFFER_PCT*100:.1f}%, id={sl_oid_new})")
-        except BinanceAPIException as e:
-            logging.error(f"Trail SL failed: {e.message}")
-
-    sl_order.update({
-        "stopPrice": sl_stop, "price": sl_limit,
-        "qty": remaining, "orderId": sl_oid_new,
-        "status": None, "pnl_notified": False,
-    })
+    entry["sl_order"] = {
+        "software_sl": True, "sl_price": sl_stop, "orderId": "SOFTWARE_SL",
+        "qty": remaining, "status": None, "pnl_notified": False,
+    }
 
     entry["sl_trailed"] = True
 
@@ -589,7 +574,10 @@ def _check_trade_closed(trade: dict):
         tps = entry.get("tp_orders", [])
 
         if sl.get("status") == "FILLED":
+            # SL closes only what's left — TPs that filled before it (e.g. TP1
+            # before a trailed SL) are part of this entry's result too.
             total_pnl += sl.get("pnl_usdt", 0)
+            total_pnl += sum(tp.get("pnl_usdt", 0) for tp in tps if tp.get("status") == "FILLED")
             continue  # entry fully resolved via SL
 
         if sl.get("sell_pending"):
@@ -703,7 +691,7 @@ def check_exit_fills(client: BinanceClient | None):
 
             # ── Check SL order ────────────────────────────────────────────────
             sl = entry.get("sl_order", {})
-            if sl and not sl.get("pnl_notified") and str(sl.get("orderId")) not in ("DRY_RUN", "", "None", None):
+            if sl and not sl.get("pnl_notified") and str(sl.get("orderId")) not in ("DRY_RUN", "", "None", "SOFTWARE_SL"):
                 try:
                     status = client.get_order(symbol=symbol, orderId=sl["orderId"]) if client else None
                 except BinanceAPIException as e:
@@ -784,7 +772,8 @@ def check_software_sl(client: BinanceClient | None):
         symbol  = signal["symbol"]
         orders  = result.get("placed_orders", [])
 
-        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty") and not o.get("merged_into")]
+        filled_entries = [o for o in orders if o.get("tp_sl_placed") and o.get("filled_qty") and not o.get("merged_into")
+                          and (o.get("sl_order") or {}).get("status") != "FILLED"]
         if not filled_entries:
             continue
 
@@ -799,15 +788,25 @@ def check_software_sl(client: BinanceClient | None):
             logging.warning(f"Software SL: could not fetch price for {symbol}: {e}")
             continue
 
-        retrying = any((e.get("sl_order") or {}).get("sell_pending") for e in filled_entries)
-        if current_price > sl and not retrying:
-            continue  # price still above SL — nothing to do
+        # Each entry stops at its own level: the signal SL, or — once TP1 has
+        # trailed it — entry+BREAKEVEN_BUFFER_PCT (older records kept that in
+        # stopPrice from when the trail was a resting order that never placed).
+        def _sl_level(e):
+            rec = e.get("sl_order") or {}
+            if e.get("sl_trailed"):
+                return rec.get("sl_price") or rec.get("stopPrice") or sl
+            return sl
 
-        logging.warning(f"🛑 Software SL triggered: {symbol} price={current_price} <= SL={sl}")
+        triggered = [e for e in filled_entries
+                     if current_price <= _sl_level(e) or (e.get("sl_order") or {}).get("sell_pending")]
+        if not triggered:
+            continue  # price still above every SL — nothing to do
 
         # Cancel all open TP orders
         sell_failed = False
-        for entry in filled_entries:
+        for entry in triggered:
+            entry_sl = _sl_level(entry)
+            logging.warning(f"🛑 Software SL triggered: {symbol} price={current_price} <= SL={entry_sl}")
             lot_step = None
             sym_info = None
             for tp in entry.get("tp_orders", []):
@@ -870,10 +869,11 @@ def check_software_sl(client: BinanceClient | None):
                         "avg_fill_price": round(avg_price, 8), "filled_qty": fill_qty,
                         "pnl_usdt": pnl_usdt, "pnl_pct": pnl_pct, "pnl_notified": True,
                     }
+                    label = "Trail SL hit (breakeven)" if entry.get("sl_trailed") else "SL hit"
                     logging.info(f"🛑 Software SL sold {fill_qty:.8f} {symbol} @ {avg_price:.4f}  {sign}{pnl_usdt:.2f} USDT")
                     send_telegram(
-                        f"🛑 *{symbol} SL hit* (software)\n"
-                        f"Price `${current_price:,.4f}` ≤ SL `${sl:,.4f}`\n"
+                        f"🛑 *{symbol} {label}* (software)\n"
+                        f"Price `${current_price:,.4f}` ≤ SL `${entry_sl:,.4f}`\n"
                         f"Sold `{fill_qty:.8f}` @ `${avg_price:,.4f}`\n"
                         f"P&L: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
                     )
@@ -900,7 +900,9 @@ def check_software_sl(client: BinanceClient | None):
         if sell_failed:
             continue  # retry next poll; don't mark triggered/closed while coins are still held
 
-        trade["software_sl_triggered"] = True
+        # Only stop watching the trade once every filled entry has been stopped out
+        if len(triggered) == len(filled_entries):
+            trade["software_sl_triggered"] = True
         _check_trade_closed(trade)
 
     if changed:
