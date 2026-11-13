@@ -93,6 +93,19 @@ def _get_filter(sym_info: dict, filter_type: str, field: str) -> str:
     return "0.00001"
 
 
+def _sellable_qty(client: BinanceClient, symbol: str, qty: float, sym_info: dict) -> float:
+    """Clamp a sell qty to the base asset actually free in the wallet, rounded to
+    LOT_SIZE. Buys paid without BNB take their commission in the base asset, so
+    the wallet can hold slightly less than the recorded filled_qty — selling the
+    recorded qty then fails with "insufficient balance". Returns 0 if what's
+    free is below minQty (nothing sellable)."""
+    lot_step = _get_filter(sym_info, "LOT_SIZE", "stepSize")
+    min_qty  = float(_get_filter(sym_info, "LOT_SIZE", "minQty"))
+    free     = float(client.get_asset_balance(asset=sym_info["baseAsset"])["free"])
+    sell_qty = _round_to(min(qty, free), lot_step)
+    return sell_qty if sell_qty >= min_qty else 0.0
+
+
 # ── Trade log ─────────────────────────────────────────────────────────────────
 
 def load_trades() -> list[dict]:
@@ -579,6 +592,10 @@ def _check_trade_closed(trade: dict):
             total_pnl += sl.get("pnl_usdt", 0)
             continue  # entry fully resolved via SL
 
+        if sl.get("sell_pending"):
+            all_closed = False  # software SL fired but its market sell hasn't gone through yet
+            continue
+
         if tps:
             total_pnl += sum(tp.get("pnl_usdt", 0) for tp in tps if tp.get("status") == "FILLED")
             if not all(tp.get("status") in ("FILLED", "CANCELED") for tp in tps):
@@ -782,12 +799,14 @@ def check_software_sl(client: BinanceClient | None):
             logging.warning(f"Software SL: could not fetch price for {symbol}: {e}")
             continue
 
-        if current_price > sl:
+        retrying = any((e.get("sl_order") or {}).get("sell_pending") for e in filled_entries)
+        if current_price > sl and not retrying:
             continue  # price still above SL — nothing to do
 
         logging.warning(f"🛑 Software SL triggered: {symbol} price={current_price} <= SL={sl}")
 
         # Cancel all open TP orders
+        sell_failed = False
         for entry in filled_entries:
             lot_step = None
             sym_info = None
@@ -804,8 +823,11 @@ def check_software_sl(client: BinanceClient | None):
                 tp["status"] = "CANCELED"
                 tp["pnl_notified"] = True
 
-            # Market-sell the remaining filled qty
-            remaining = _entry_qty(entry)
+            # Market-sell what's still held — the filled qty minus anything TPs already sold
+            # (rounded so float noise like 0.3-0.1=0.19999… can't floor a whole LOT_SIZE step away)
+            remaining = round(_entry_qty(entry) - sum(float(tp.get("filled_qty") or 0)
+                                                      for tp in entry.get("tp_orders", [])
+                                                      if tp.get("status") == "FILLED"), 10)
             if remaining <= 0:
                 continue
 
@@ -823,6 +845,22 @@ def check_software_sl(client: BinanceClient | None):
                                      "avg_fill_price": current_price, "pnl_usdt": 0.0, "pnl_notified": True}
             else:
                 try:
+                    sell_qty = _sellable_qty(client, symbol, sell_qty, sym_info)
+                    if sell_qty <= 0:
+                        # Nothing left in the wallet — position was already sold
+                        # outside this process (Binance app, /pending Exit, etc.).
+                        entry["sl_order"] = {
+                            "orderId": "NO_BALANCE", "status": "FILLED", "filled_qty": 0,
+                            "pnl_usdt": 0.0, "pnl_pct": 0.0, "pnl_notified": True, "no_balance": True,
+                        }
+                        logging.warning(f"Software SL: no {symbol} balance left to sell — closing record")
+                        send_telegram(
+                            f"⚠️ *{symbol}* Software SL fired but there's no balance left to sell.\n"
+                            f"Position looks already closed outside the bot — marking the trade closed "
+                            f"(P&L for this exit not recorded)."
+                        )
+                        changed = True
+                        continue
                     order = client.order_market_sell(symbol=symbol, quantity=_fmt(sell_qty))
                     avg_price, fill_qty = _avg_fill_price_from_status(order, current_price)
                     pnl_usdt, pnl_pct   = _calc_pnl(entry_price, avg_price, fill_qty)
@@ -840,11 +878,27 @@ def check_software_sl(client: BinanceClient | None):
                         f"P&L: `{sign}{pnl_usdt:.2f} USDT` (`{sign}{pnl_pct:.2f}%`)"
                     )
                 except BinanceAPIException as e:
+                    # Persist the failure so the TP cancellations above are saved,
+                    # the trade isn't reported closed while still holding coins,
+                    # and the user is alerted once rather than every poll.
+                    sell_failed = True
+                    changed     = True
+                    sl_rec      = entry.setdefault("sl_order", {})
+                    sl_rec["sell_pending"] = True
+                    sl_rec["sell_error"]   = e.message
                     logging.error(f"Software SL market sell failed: {e.message}")
-                    send_telegram(f"⚠️ *{symbol}* Software SL market sell failed:\n`{e.message}`")
+                    if not sl_rec.get("sell_fail_notified"):
+                        sl_rec["sell_fail_notified"] = True
+                        send_telegram(
+                            f"⚠️ *{symbol}* Software SL market sell failed:\n`{e.message}`\n"
+                            f"Will keep retrying every poll — check the position on Binance."
+                        )
                     continue
 
             changed = True
+
+        if sell_failed:
+            continue  # retry next poll; don't mark triggered/closed while coins are still held
 
         trade["software_sl_triggered"] = True
         _check_trade_closed(trade)
